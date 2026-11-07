@@ -1,306 +1,358 @@
-<div align="center">
+# TSCDesk
 
-<img src="resources/quixi-logo.svg" alt="QuixiDesk Logo" width="220" />
+**Workspace de desenvolvimento com IA, escrito em Rust, para organizar projetos e trabalhar com arquivos, terminal e Git.**
 
-**A Native Rust Desktop Workspace for AI — macOS, Windows & Linux**
+O **TSCDesk** reúne conversas com diferentes modelos, projetos locais, ferramentas MCP e artefatos HTML em um aplicativo de desktop, sem Electron. Você conecta um provedor de IA — incluindo RunPod Serverless — e autoriza as ações que podem ser executadas no seu projeto. O suporte ao **ChromeOS funciona pelo ambiente Linux (Crostini)** e permanece experimental; também há código para Linux, Windows e macOS.
 
-[![License: MIT](https://img.shields.io/badge/License-MIT-14B8A6.svg)](LICENSE)
-[![Built with Rust](https://img.shields.io/badge/Built%20with-Rust-0F172A?logo=rust)](Cargo.toml)
-[![Engineered with REA](https://img.shields.io/badge/Reverse%20Engineered%20with-REA-4F46E5)](https://github.com/morluto/rea)
+[![Licença MIT](https://img.shields.io/badge/Licen%C3%A7a-MIT-14B8A6.svg)](LICENSE)
+[![Rust](https://img.shields.io/badge/Desenvolvido%20em-Rust-0F172A?logo=rust)](Cargo.toml)
 
-</div>
+> Este repositório se chama **tscdesk** e deriva do QuixiDesk. Os nomes internos dos crates, o executável `QuixiDesk`, os ícones e o diretório de dados `~/.quixi` foram preservados para manter compatibilidade. O instalador Linux oferece o comando e o atalho **TSCDesk**. A interface do aplicativo ainda está em inglês.
 
----
+## O que este projeto faz, em palavras simples?
 
-**QuixiDesk** is a native Rust (`tao` + `wry`) desktop workspace for **macOS, Windows, and Linux**, with **pluggable LLM providers**, **built-in MCP tools**, and a **unified task/chat workspace**. Its native host runs without an Electron or Node.js application runtime.
+Imagine um chat de IA que, **com a sua autorização**, também pode ler uma pasta do computador, ajudar a editar código, executar comandos e organizar o resultado em um projeto. Esse é o TSCDesk.
 
-## Screenshots
+Ele é a **interface e o executor de ferramentas**, não um modelo de IA próprio. Você conecta um provedor, escolhe um modelo e conversa. O aplicativo encaminha seus pedidos ao modelo e executa as ferramentas autorizadas que ele solicitar.
 
-QuixiDesk 3.6556.9 on macOS, captured from the running app with an isolated demo profile. The fictional Campus Makers Club conversation and model catalog are sample data.
+Um exemplo:
 
-### Start a task
+1. Você escolhe a pasta de um projeto e pede: “Explique este código e proponha uma correção”.
+2. O modelo solicita a leitura dos arquivos necessários.
+3. O aplicativo mostra as ações e pede aprovação conforme o modo de permissões.
+4. Você acompanha a resposta e pode aprovar a edição ou um comando de teste.
+5. A conversa e seus resultados ficam salvos localmente.
 
-![QuixiDesk home in dark theme, with workspace selection, permission mode, and model picker](docs/screenshots/quixidesk-home.jpg)
+Também é possível usar apenas o chat, sem selecionar uma pasta. Nesse caso, a conversa não recebe ferramentas de arquivos do workspace.
 
-### Work through a conversation
+### Recursos implementados
 
-![QuixiDesk conversation with a sample three-part club meeting agenda and project context](docs/screenshots/quixidesk-conversation.jpg)
+| Recurso | Para que serve |
+| --- | --- |
+| Chat com diferentes provedores | Conectar APIs de IA e endpoints compatíveis com OpenAI; receber respostas progressivamente, escolher modelos e manter histórico. |
+| Arquivos, terminal e Git | Ler, buscar e editar arquivos, executar comandos e inspecionar alterações no projeto selecionado. |
+| Projetos | Reunir pastas, instruções, conversas, artefatos e agendamentos. |
+| Artefatos HTML | Criar e visualizar páginas/resultados interativos, consultar revisões e exportar HTML para um arquivo local. |
+| MCP e skills | Conectar ferramentas externas e usar instruções especializadas para tarefas. MCP é um protocolo de integração de ferramentas; não é um modelo de IA. |
+| Subagentes | Delegar partes delimitadas de uma tarefa, com histórico separado e as permissões da conversa principal. |
+| Agendamentos | Preparar tarefas recorrentes. **O aplicativo precisa permanecer aberto** para executá-las. |
+| Navegador interno | Consultar páginas em uma área isolada dentro do aplicativo. Não equivale ao Chrome e não usa automaticamente suas abas ou sessões do navegador. |
+| Ferramentas de desktop | Captura, clipboard, seleção de pastas e entrada de teclado/mouse, dependendo do sistema, compositor e permissões. Não há paridade garantida entre plataformas. |
 
-### Choose a model
+**O que ele não faz:** não inclui um modelo treinado próprio, não elimina os custos de uma API, não sincroniza automaticamente seus projetos com a nuvem e não fornece controle irrestrito do ChromeOS. Anexos diretos aceitam imagens e texto; PDF e documentos Office não têm ingestão nativa pelo campo de anexos.
 
-![QuixiDesk model picker in light theme, with a sample custom-provider catalog, model search, and an option to add unadvertised models](docs/screenshots/quixidesk-models.jpg)
+O aplicativo é escrito em **Rust**, usando `tao` para a janela e `wry` para a webview do sistema: GTK 3 + WebKitGTK no Linux, WKWebView no macOS e WebView2 no Windows. **Não exige Electron nem Node.js para executar.** A interface utiliza HTML, CSS e JavaScript incluídos em `resources/`.
 
-### Keep project context together
+## Início rápido no ChromeOS
 
-![Campus Makers Club project page with its conversation, shared instructions, folder controls, and linked schedule](docs/screenshots/quixidesk-projects.jpg)
+1. Ative **Configurações → Sobre o ChromeOS → Desenvolvedores → Ambiente para desenvolvedores do Linux**.
+2. Abra o aplicativo **Terminal → Linux** do Chromebook.
+3. Na primeira instalação, execute:
 
-### Schedule recurring work
-
-![Weekly schedule editor with instructions, Wednesday afternoon timing, upcoming runs, and project context and permissions](docs/screenshots/quixidesk-schedules.jpg)
-
----
-
-## Appreciation & Credit: [REA (`morluto/rea`)](https://github.com/morluto/rea)
-
-Special appreciation goes to **[REA — Reverse Engineer Anything (`github.com/morluto/rea`)](https://github.com/morluto/rea)**.
-
-The native runtime development and analysis benefited from **[REA](https://github.com/morluto/rea)**. If you are analyzing native binaries, Electron/JavaScript bundles, mobile packages, or complex runtime protocols, check out and star **[https://github.com/morluto/rea](https://github.com/morluto/rea)**.
-
----
-
-## Key Features
-
-- **Native Rust Runtime (Zero Electron / Node.js Overhead):** Built on `tao` + `wry` with a custom `app://localhost` protocol router (`quixi-app`, `quixi-ipc`, `quixi-engine`, `quixi-workspace`, `quixi-platform`, `quixi-mcp`, `quixi-netstack`).
-- **Unified Workspace:** Attach local folders, choose file modification permissions, and run multi-turn streaming sessions in one view.
-- **Built-In In-App Browser Use & Computer Use (Out of the Box):**
-  - **In-App Browser:** Opens a docked browser pane inside QuixiDesk with multi-tab navigation, isolated page snapshots, and interactive `[ref_N]` accessibility element inspection.
-  - **Computer Use:** Native macOS CoreGraphics screen capture, cursor control, keyboard/mouse synthesis, and window inspection (`44` tools active out of the box).
-  - **Built-in and external MCP tools:** Workspace files, Git, shell, desktop/browser automation, memory, fetch, and macOS AppleScript adapters. External servers use persistent stdio, Streamable HTTP, or SSE connections with real discovery, readiness, OAuth, and actionable errors. See the [MCP guide](docs/mcp.md).
-- **Original Interface:** System typography, light and dark themes, keyboard navigation, and responsive layouts. The replacement interface currently uses English.
-
-Select a workspace folder before sending a file task. **Manual** allows directory listings and file reads, then pauses for approval before changes or commands. **Allow once** approves the displayed action; **Allow file edits** permits edits in that conversation while commands continue to ask. **Auto** permits tool actions without individual approval. Approving an action resumes the current request.
-
-**Projects** bring instructions, folders, conversations, and related artifacts and schedules together on one page. Tasks started from a project inherit its instructions and selected folder; personal and project drafts stay separate. A conversation without a selected folder has no workspace file tools—choose a folder when it needs to read or change local files.
-
-In a project, **Manage folders → Add folder** opens the native folder chooser on macOS. **Enter path** also accepts home-folder shortcuts such as `~/Projects/my-project`, paths with spaces, and quoted paths copied from your file manager.
-
-**Attachments** support PNG, JPEG, GIF, WebP, and UTF-8 text files: up to 8 files per message, 5 MiB per image, 1 MiB per text file, and 20 MiB combined. Images require a vision-capable model. Loading and failed attachments remain visible; fix or remove failures before sending. PDF and Office document ingestion is not supported. Unsent attachments are held in memory and do not survive an app restart.
-
-**Edit** and **Retry** create a new conversation branch, preserving the original transcript and a link back to it. Stop an active task before branching.
-
-Tool calls and their results appear together in a collapsible activity group. **Stop** cancels pending approvals and preserves any answer text already received. Follow-up requests retain earlier tool results, and artifact revisions can update the existing preview without changing its link.
-
-Use **Search** to find conversation titles and messages, project names and instructions, artifact metadata, and schedule names and prompts. Filter by category or include archived conversations. Within a conversation, **Find in conversation** (Cmd/Ctrl+F) highlights matches; Enter/Shift+Enter or Cmd/Ctrl+G moves between them. Screenshot tool results appear as images and are forwarded to vision-capable models through the OpenAI-compatible and OpenAI OAuth tool paths. Fresh screenshot requests capture fresh observations.
-
-**Artifacts** has a searchable, sortable gallery with pinning, preview and source views, duplication, and revision restoration. **Export HTML** saves a local file without overwriting an existing filename; **Continue in chat** lets you refine the artifact. Artifacts are stored locally; cloud publishing and synchronization are not provided.
-
-In **Tools & skills**, use **Add connection** to configure an MCP server through a form, or **Advanced JSON** for direct configuration. Connections can be edited, enabled, disabled, and removed individually. Search installed skills, read their instructions, or choose **Try in a new task** to prepare a prompt with the skill files attached for review before sending.
-
-**Settings → Application & audio** shows the installed version, storage status, keyboard shortcuts, and available audio features. Read-aloud and in-app dictation depend on the system webview's speech services; dictation may require microphone permission and an online service. When in-app recognition is unavailable, use your operating system's dictation in the prompt.
-
-**Stop** terminates running Bash command trees. Commands have a 120-second default timeout; a task can request up to one hour. Manual and Allow file edits modes ask before file access outside the selected workspace, including symlink targets. Auto mode grants broader access; these approvals are not an operating-system sandbox.
-
-Long conversations automatically summarize older provider context near the model’s context budget while keeping the original transcript. Tasks can run up to 100 tool rounds, with an explicit wrap-up at the limit. The summary is model-generated and may be imperfect; if compaction fails, the app preserves the conversation and reports the problem.
-
-**Subagents** handle bounded parts of a request with their own saved activity. The parent supplies an explicit assignment and receives a short result; child tool chatter stays in the expandable **Subagents** panel. Children inspect files by default. Delegated edits and commands use the conversation's current permissions, and approval cards identify the requesting child. **Stop** cancels the parent and its children. Interrupted children remain visible after restart and are never automatically replayed. See [Subagent design](docs/subagents.md) for limits and provider behavior.
-
-**Schedules** offer daily, weekday, weekly, hourly, and custom five-field cron schedules, with next-run previews in the computer’s local time zone. **Context & permissions** selects the project, folder, model, and approval mode. Automatic runs require QuixiDesk to remain open. The app reports missed times and skips catch-up runs; it also skips overlapping runs of the same schedule. **Run now** starts a conversation immediately without moving the next scheduled occurrence, and **View last run** opens it. Run states distinguish work in progress, pending approval, completion, failure, and interruption. Existing definitions from older builds need to be enabled or saved once to activate automatic dispatch. Manual-mode runs still wait for tool approvals.
-
-Provider credentials are encrypted with AES-256-GCM; the encryption key is held in macOS Keychain, Windows Credential Manager, or the Linux Secret Service. Linux needs an unlocked desktop secret service (such as GNOME Keyring or KWallet with Secret Service support). Existing plaintext provider settings migrate on successful unlock/save. If unlocking or saving fails, the existing file is preserved and the app reports the error. Disposable test profiles use a separate local test key and must not contain production credentials.
-
----
-
-## Supported LLM Providers
-
-QuixiDesk includes a built-in **Provider Manager** (open **Settings → Providers**) supporting **cloud, OAuth, and local inference providers**:
-
-Configure the endpoint and credentials, then save. QuixiDesk loads all models advertised by the provider's `/models` endpoint; no model ID is required during setup. Use the chat model picker to search, select, or refresh the catalog. Custom Endpoint and OpenRouter also support adding exact IDs for unadvertised models without replacing the discovered list.
-
-### Priority Providers
-| # | Provider | Auth Modes | Default / Example Models |
-| :--- | :--- | :--- | :--- |
-| **1** | **OpenRouter** *(Recommended)* | API Key (`OPENROUTER_API_KEY`) | `openai/gpt-5.4`, `google/gemini-3.1-pro`, `deepseek/deepseek-v4.1-flash`, `x-ai/grok-4` |
-| **2** | **Custom OpenAI-Compatible** | API Key / Optional (`CUSTOM_LLM_API_KEY`) | Any OpenAI `/v1/chat/completions` endpoint (vLLM, LiteLLM, TabbyAPI, proxies) |
-| **3** | **OpenAI (ChatGPT Plus / Pro & API)** | **PKCE / Device OAuth** or API Key (`OPENAI_API_KEY`) | `gpt-5.4`, `gpt-5.4-mini`, `o3`, `o4-mini`, `gpt-4.1` |
-| **4** | **xAI Grok (SuperGrok / X & API)** | **RFC 8628 Device OAuth** or API Key (`XAI_API_KEY`) | `grok-4`, `grok-3`, `grok-3-mini`, `grok-code-fast-1` |
-| **5** | **Anthropic (Claude Direct)** | API Key (`ANTHROPIC_API_KEY`) | `claude-sonnet-4-6`, `claude-opus-4-6`, `claude-haiku-4-5-20251001` |
-
-### Cloud Providers
-| Provider | Environment Variable | Base Endpoint | Example Models |
-| :--- | :--- | :--- | :--- |
-| **Google Gemini** | `GEMINI_API_KEY` | `https://generativelanguage.googleapis.com/v1beta/openai` | `gemini-2.5-pro`, `gemini-2.5-flash` |
-| **DeepSeek** | `DEEPSEEK_API_KEY` | `https://api.deepseek.com/v1` | `deepseek-flash` (V4.1 Flash, 1M ctx, vision), `deepseek-v4-pro` |
-| **Groq** | `GROQ_API_KEY` | `https://api.groq.com/openai/v1` | `llama-3.3-70b-versatile`, `deepseek-r1-distill-llama-70b`, `qwen-qwq-32b` |
-| **Mistral AI** | `MISTRAL_API_KEY` | `https://api.mistral.ai/v1` | `mistral-large-latest`, `codestral-latest` |
-| **Together AI** | `TOGETHER_API_KEY` | `https://api.together.xyz/v1` | `meta-llama/Llama-3.3-70B-Instruct-Turbo`, `deepseek-ai/DeepSeek-R1` |
-| **Fireworks AI** | `FIREWORKS_API_KEY` | `https://api.fireworks.ai/inference/v1` | `accounts/fireworks/models/deepseek-v3`, `llama-v3p3-70b-instruct` |
-| **Perplexity** | `PERPLEXITY_API_KEY` | `https://api.perplexity.ai` | `sonar-pro`, `sonar-reasoning-pro`, `sonar` |
-| **Cohere** | `COHERE_API_KEY` | `https://api.cohere.com/compatibility/v1` | `command-a-03-2025`, `command-r-plus-08-2024` |
-| **Cerebras** | `CEREBRAS_API_KEY` | `https://api.cerebras.ai/v1` | `llama-3.3-70b`, `qwen-3-32b` |
-
-### Local Zero-Key Providers (Auto-Detected)
-| Provider | Default Local Endpoint | Example Models |
-| :--- | :--- | :--- |
-| **Ollama (Local)** | `http://127.0.0.1:11434/v1` | `qwen3:32b`, `llama3.3:latest`, `deepseek-r1:32b`, `gemma3:27b` |
-| **LM Studio (Local)** | `http://127.0.0.1:1234/v1` | Any GGUF / MLX model loaded in LM Studio |
-| **llama.cpp / LocalAI** | `http://127.0.0.1:8080/v1` | Any model served by `llama-server` or LocalAI |
-
----
-
-## Installation & Build Instructions
-
-QuixiDesk uses the system webview: WKWebView on macOS, WebKitGTK on Linux, and WebView2 on Windows. Build on the target OS with the **current stable Rust toolchain** from [rustup](https://rust-lang.org/tools/install/) and Git. The lockfile is checked in; use `--locked` for reproducible dependency selection. Node.js and Electron are not required to build or run the checked-in application.
-
-The original interface, bootstrap defaults, icons, and task instructions are checked in under `resources/`. Keep that directory with the application. Build directly from the repository; no extracted application bundle or external renderer is required. Regenerate the skill archives with `python3 scripts/package-bundled-skills.py` after editing their sources.
-
-Clone using HTTPS (or your configured Git SSH credentials):
-
-```sh
-git clone https://github.com/QuixiAI/QuixiDesk.git
-cd QuixiDesk
+```bash
+sudo apt-get update
+sudo apt-get install git python3
+cd "$HOME"
+git clone https://github.com/andrebauru/tscdesk.git
+cd tscdesk
+bash iniciar-chromeos.sh
 ```
+
+Se você já tem o projeto, não repita o clone: consulte [como atualizar](#como-atualizar-no-chromeos). O script **`iniciar-chromeos.sh` fica na raiz**, pede autorização para instalar dependências, compila o aplicativo e o abre. Não execute o script inteiro com `sudo`. A primeira compilação pode demorar e precisa de vários gigabytes livres; veja os [requisitos e opções de instalação](#instalação-no-chromebook-ou-linux-debianubuntu).
+
+Depois de instalar:
+
+- Abra pelo atalho **TSCDesk** no menu de aplicativos Linux do ChromeOS, ou execute `"$HOME/.local/bin/tscdesk"` no Terminal.
+- Entre em **Settings → Providers**, configure o provedor e escolha o modelo. Para RunPod, informe Endpoint ID, API Key e modelo conforme o [guia abaixo](#runpod-serverless-queue-based).
+- Selecione uma pasta de projeto para tarefas com arquivos e comece em modo **Manual**. O RunPod atual é chat-only, sem ferramentas de edição/terminal habilitadas.
+- Envie `FINAL` isoladamente para pausar a IA e `INICIAR` para permitir novos pedidos. A IDE continua aberta; isso não é um comando de desligamento da GPU.
+
+O script **não configura abertura automática ao ligar ou entrar no ChromeOS**. Ele automatiza a instalação inicial e a abertura quando você o executa.
+
+## ChromeOS: como funciona o suporte
+
+O TSCDesk roda **como aplicativo Linux dentro do Crostini**, o ambiente Linux oferecido pelo ChromeOS. Não é extensão do Chrome, PWA, APK nem um aplicativo executado diretamente no sistema hospedeiro.
+
+- Use o ambiente Debian do app **Terminal** do Chromebook; não é necessário ativar o modo desenvolvedor do dispositivo.
+- A janela utiliza a integração gráfica existente do Crostini (Sommelier, Wayland ou XWayland). O launcher não substitui as variáveis gráficas da sessão.
+- Os arquivos do ambiente Linux ficam disponíveis normalmente. Para acessar uma pasta do ChromeOS, abra o app **Arquivos**, clique nela com o botão direito e escolha **Compartilhar com Linux**. As pastas compartilhadas aparecem sob `/mnt/chromeos`.
+- O instalador não configura controle privilegiado de entrada, não altera `/dev/uinput` e não desativa o sandbox do WebKit.
+- Capturar/controlar toda a tela do ChromeOS, automatizar apps Android ou controlar o Chrome do sistema **não são funcionalidades garantidas** pelo container Linux.
+- Ao sair da conta ou desligar o ambiente Linux, os processos param. Agendamentos não continuam executando fora desse ambiente.
+
+**Estado da validação:** o suporte específico ao ChromeOS é experimental. Testes de scripts com fixtures não substituem um teste real da janela, do cofre de credenciais e das permissões em um Chromebook. ARM64 também precisa de validação em hardware; o build é nativo, não um pacote x86 que funciona em qualquer arquitetura.
+
+## Instalação no Chromebook ou Linux Debian/Ubuntu
+
+### 1. Preparar o ambiente Linux
+
+No Chromebook, abra **Configurações → Sobre o ChromeOS → Desenvolvedores → Ambiente para desenvolvedores do Linux → Configurar**. Em dispositivos administrados, a opção pode estar bloqueada pela escola ou empresa.
+
+No Terminal Linux:
+
+```bash
+sudo apt-get update
+sudo apt-get install git python3
+cd "$HOME"
+git clone https://github.com/andrebauru/tscdesk.git
+cd tscdesk
+```
+
+Mantenha o checkout no armazenamento Linux (`$HOME`), não em uma pasta compartilhada do ChromeOS: a compilação gera muitos arquivos e depende de permissões e links do sistema Linux.
+
+### 2. Instalar e abrir pelo arquivo da raiz
+
+O arquivo **[`iniciar-chromeos.sh`](iniciar-chromeos.sh)** instala na primeira execução e abre a IDE. Nas seguintes, reutiliza a instalação sem recompilar. Execute no Terminal Linux, não como root:
+
+```bash
+bash iniciar-chromeos.sh --help
+bash iniciar-chromeos.sh
+
+# Instalar/atualizar explicitamente após alterações no código:
+bash iniciar-chromeos.sh --instalar
+
+# Diagnóstico: não instala, não abre a janela e não consulta o RunPod.
+bash iniciar-chromeos.sh --check
+```
+
+O script não configura início no login do ChromeOS e não cria tarefas de aquecimento de GPU. Uma primeira instalação pode levar bastante tempo; somente depois dela a janela abre. Leia os scripts antes de executá-los. Para apenas instalar, sem abrir:
+
+```bash
+bash scripts/install-linux.sh --help
+bash scripts/install-linux.sh
+```
+
+O instalador foi pensado para **Debian 12+ e Ubuntu 22.04+**, com arquitetura **x86_64 ou aarch64/ARM64** e pacotes GTK 3/WebKitGTK 4.1 disponíveis. Ele:
+
+1. Pede confirmação para instalar dependências via APT; somente essa etapa utiliza `sudo`.
+2. Instala ou atualiza Rust stable com sua confirmação, baixando o instalador oficial via HTTPS quando necessário; preserva o toolchain padrão e não compila como root.
+3. Compila o workspace usando `Cargo.lock` (`--locked`). Por padrão usa dois jobs para limitar o uso de memória.
+4. Instala executáveis, helpers, recursos e licença sob `~/.local/opt/tscdesk`.
+5. Cria o comando `~/.local/bin/tscdesk` e o atalho **TSCDesk** no menu de aplicativos Linux/ChromeOS.
+
+**A primeira compilação pode demorar e consumir vários gigabytes.** Reserve, como margem prática, cerca de 10 GB livres; 8 GB de RAM são recomendáveis, mas o consumo varia por máquina e toolchain. Em aparelhos com pouca memória, use um job:
+
+```bash
+bash scripts/install-linux.sh --jobs 1
+```
+
+Outras opções:
+
+```bash
+# Aceitar as etapas de instalação sem perguntas; leia o script antes.
+bash scripts/install-linux.sh --yes
+
+# Usar dependências já instaladas.
+bash scripts/install-linux.sh --skip-deps
+
+# Instalar executáveis já compilados em target/release.
+bash scripts/install-linux.sh --skip-deps --skip-build
+
+# Escolher um diretório absoluto de instalação próprio.
+bash scripts/install-linux.sh --prefix "$HOME/Apps/tscdesk"
+```
+
+O instalador reconhece somente instalações que ele gerencia. Conflitos com arquivos/atalhos de outro programa são recusados, em vez de sobrescritos silenciosamente. Atualizações mantêm releases anteriores; **não apagam suas conversas, configurações ou projetos**.
+
+### 3. Abrir o aplicativo
+
+Use o atalho **TSCDesk** no lançador do ChromeOS, ou execute no Terminal:
+
+```bash
+"$HOME/.local/bin/tscdesk"
+
+# Diagnóstico sem abrir a janela:
+"$HOME/.local/bin/tscdesk" --check
+```
+
+Se `~/.local/bin` já estiver no `PATH`, basta `tscdesk`. A instalação é autocontida: não depende de manter o checkout no mesmo lugar depois de compilar e instalar.
+
+O launcher resolve os recursos junto à instalação, usa sua pasta pessoal como workspace padrão no uso normal e preserva overrides explícitos. Perfis de teste mantêm seu próprio workspace. Se não houver um endereço de D-Bus de sessão, usa `dbus-run-session`; não substitui um barramento existente. Sem `DISPLAY` ou `WAYLAND_DISPLAY`, uma sessão SSH/terminal sem interface gráfica não pode abrir a janela.
+
+### Como atualizar no ChromeOS
+
+Feche o TSCDesk e abra o Terminal Linux. Se o checkout foi criado com o clone acima:
+
+```bash
+cd "$HOME/tscdesk"
+git pull --ff-only
+bash iniciar-chromeos.sh --instalar
+```
+
+O `git pull --ff-only` evita criar merges automaticamente. Se houver alterações locais conflitantes ou divergência de histórico, ele pode recusar a atualização: preserve seu trabalho e resolva o conflito antes de reinstalar, sem usar `reset --hard` ou apagar a pasta.
+
+**Apenas baixar o código não atualiza os executáveis instalados**; a opção `--instalar` recompila e publica uma nova instalação local. Os dados em `~/.quixi`, suas chaves e os projetos não são apagados pelo instalador. Para investigar problemas de abertura, use `bash iniciar-chromeos.sh --check`.
+
+### Cofre de credenciais: passo importante no Crostini
+
+As chaves de provedores são criptografadas com AES-256-GCM. No Linux, a chave de criptografia depende de um **Secret Service desbloqueado**, por exemplo GNOME Keyring. Instalar o pacote sozinho não garante que o cofre esteja pronto: o login do ChromeOS não necessariamente desbloqueia o cofre do container.
+
+Se o aplicativo não conseguir salvar/desbloquear credenciais:
+
+```bash
+sudo apt-get install seahorse
+seahorse
+```
+
+No gerenciador gráfico, crie ou desbloqueie um chaveiro de senhas protegido por senha e defina-o como padrão. Execute o aplicativo na **mesma sessão D-Bus** do serviço. Para iniciar o componente de segredos na sessão atual, quando necessário:
+
+```bash
+gnome-keyring-daemon --start --components=secrets
+```
+
+Isso não desbloqueia automaticamente um chaveiro existente. **Não remova a senha do cofre, não use `QUIXI_TEST_PROFILE` para guardar credenciais reais e não crie um fallback de chave em texto puro.** Se já houver KWallet/Secret Service funcionando, mantenha-o em vez de substituir o serviço.
+
+### Problemas comuns
+
+| Sintoma | O que verificar |
+| --- | --- |
+| Não abre janela | Abra pelo Terminal do Chromebook ou pelo menu Linux; confirme sessão gráfica e D-Bus. |
+| Pacote WebKit ausente | Use uma distribuição com `libwebkit2gtk-4.1-dev`; apenas WebKitGTK 4.0 não basta. O recurso `linux-body` exige WebKitGTK 2.40+. |
+| Build encerrado com `Killed` | Pode ser falta de memória. Feche apps e repita com `--jobs 1`. |
+| Tela em branco/erro gráfico | Confira os logs no Terminal e atualize os pacotes. Como teste, execute `GDK_BACKEND=x11 "$HOME/.local/bin/tscdesk"` quando houver XWayland; não desative o sandbox. |
+| Credenciais não são salvas | Verifique o Secret Service e desbloqueie o chaveiro. |
+| Pasta do ChromeOS não aparece | Compartilhe-a com Linux no app Arquivos e informe seu caminho sob `/mnt/chromeos`. |
+| Controle de mouse/screenshot não funciona | O backend pode não estar disponível no Crostini. Não presuma acesso ao desktop hospedeiro nem tente elevar permissões automaticamente. |
+
+## Primeiro uso: conectar a IA
+
+1. Abra **Settings → Providers**.
+2. Configure um provedor/endpoint e sua chave, quando necessária.
+3. Salve, atualize o catálogo e escolha um modelo no chat.
+4. Escolha uma pasta se a tarefa precisar de arquivos.
+5. Comece em modo **Manual** e revise cada ação.
+
+Há integrações para OpenRouter, OpenAI, Anthropic, Gemini, DeepSeek, RunPod Serverless e outros, além de endpoints personalizados compatíveis com OpenAI. Os modelos disponíveis, autenticação, preços e limites dependem de cada serviço; uma assinatura de chat não garante acesso à API.
+
+### RunPod Serverless (Queue-based)
+
+Em **Settings → Providers → RunPod Serverless**, informe **Endpoint ID**, **API Key** e **Modelo** (padrão `qwen2.5-coder:7b`). Use **Salvar** para guardar a configuração no mecanismo criptografado existente; a chave salva não é devolvida à interface. Deixe o campo de chave vazio para preservar a chave existente.
+
+**Testar conexão** consulta `/health`: verifica autenticação/configuração, sem submeter inferência. Um resultado positivo **não comprova que o modelo consegue responder**. O chat usa `https://api.runpod.ai/v2/{Endpoint ID}/run` e acompanha o job por `/status/{Job ID}`, com prazo máximo, espera de fila/cold start e cancelamento quando possível. Não informe uma URL arbitrária no lugar do ID.
+
+A versão atual retorna uma **resposta completa**, sem anunciar streaming nem tool calling neste provedor. O contrato do worker foi verificado no código público, mas a imagem mutável `svenbrnn/runpod-ollama:latest` e seu endpoint ainda precisam de uma inferência real autorizada para validação. Não foram executados testes pagos. Veja o [guia RunPod e limitações](docs/runpod.md).
+
+### Pausar e retomar a IA
+
+Envie **`FINAL`** isoladamente no chat para pausar a IA, interromper os loops locais e tentar cancelar jobs RunPod conhecidos. A IDE fica aberta: editor, arquivos e terminal continuam disponíveis. A pausa é persistida para a próxima abertura.
+
+Envie **`INICIAR`** isoladamente para permitir **novos** pedidos. Isso não repete a tarefa anterior nem inicia GPU sozinho. `FINAL` descarta mensagens pendentes e desarma agendamentos de IA; eles podem ser reativados explicitamente na interface, mas `INICIAR` não os reativa sozinho. Também há um controle visual de pausa/retomada. Maiúsculas/minúsculas e espaços externos são aceitos; frases, código, mensagens citadas ou anexos não acionam esses comandos locais.
+
+`FINAL` **não desliga fisicamente a GPU**. Cancelamento remoto pode falhar ou ficar limitado por uma solicitação já em trânsito; nesses casos a interface informa a limitação. Sem trabalho, o RunPod poderá reduzir os workers a zero conforme a configuração de Scale to Zero. A IDE não altera `Active workers=0`/`Max workers=1`, não aquece o endpoint e não promete custo zero.
+
+Para modelos locais, conecte um servidor como Ollama, LM Studio ou llama.cpp por um endpoint compatível. **O instalador não instala nem baixa modelos.** Um Chromebook com pouca memória pode usar APIs remotas sem executar inferência local. `127.0.0.1` refere-se ao ambiente onde o aplicativo roda; um servidor no hospedeiro ou em outra máquina precisa de um endereço acessível pelo container.
+
+### Permissões e privacidade
+
+- **Manual:** leitura do workspace é permitida; alterações e comandos pedem aprovação.
+- **Allow file edits:** permite edições na conversa, mas comandos continuam pedindo aprovação.
+- **Auto:** permite ferramentas sem aprovação individual; use apenas com tarefas e pastas confiáveis.
+- Aprovações são políticas do aplicativo, **não uma garantia de sandbox do sistema**. O confinamento por Bubblewrap depende da capacidade do ambiente e pode não estar disponível.
+- O histórico fica local, mas mensagens, trechos de arquivos e resultados de ferramentas usados na conversa podem ser enviados ao provedor escolhido. Não envie segredos sem revisar o contexto e a política do serviço.
+- Os dados normais ficam em `~/.quixi`. Faça backup desse diretório e dos seus projetos. Artefatos locais não são publicados automaticamente.
+
+## Compilação manual e desenvolvimento
+
+No Linux, as dependências principais são `build-essential`, `pkg-config`, `libgtk-3-dev`, `libwebkit2gtk-4.1-dev`, `perl` e Rust stable atual. Para execução, é necessária uma sessão gráfica, D-Bus e um Secret Service para credenciais.
+
+```bash
+cargo build --locked --release --workspace
+./target/release/QuixiDesk
+```
+
+| Comando | Finalidade |
+| --- | --- |
+| `make` | Compilar o workspace em release. |
+| `make run` | Abrir o aplicativo via Cargo. |
+| `make test` | Executar testes Rust; prefira um perfil descartável, como abaixo. |
+| `make check` | Verificar todos os targets. |
+| `make install-linux` | Executar o instalador Linux/Crostini. |
+| `make app` / `make install` | Empacotar/instalar o bundle **macOS**, não o aplicativo Linux. |
 
 ### macOS
 
-Use macOS 14 or later for the documented build/test setup (Apple Silicon or Intel). Install Apple's command line tools and Rust:
+Instale as ferramentas de linha de comando da Apple e Rust stable. Depois:
 
-```sh
-xcode-select --install
-curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh
-# Open a new terminal after installation, then enter the checkout.
-rustup update stable
+```bash
 cargo build --locked --release --workspace
-./target/release/QuixiDesk
-```
-
-To create a relocatable, ad-hoc signed app bundle:
-
-```sh
 ./scripts/package-macos-app.sh
 open dist/QuixiDesk.app
-# Optional installation; quit any existing QuixiDesk instance first.
-cp -R dist/QuixiDesk.app /Applications/
 ```
 
-`make app` and `make install` are shortcuts for packaging and installation. `QUIXI_APP_SYMLINK_RESOURCES=1 make app` links resources for local iteration; use the default copied resources when distributing a bundle. Screen recording, Accessibility, and Automation access for native computer-use tools are granted through macOS System Settings when needed.
+O setup documentado usa macOS 14+. Captura de tela, acessibilidade e AppleScript podem exigir permissões do sistema.
 
-### Linux (Debian / Ubuntu)
+### Windows
 
-Install the GTK 3 and WebKitGTK 4.1 development packages described by [Wry's platform notes](https://github.com/tauri-apps/wry#platform-specific-notes):
-
-```sh
-sudo apt update
-sudo apt install build-essential pkg-config libgtk-3-dev libwebkit2gtk-4.1-dev curl git
-curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh
-# Open a new terminal after installation, then enter the checkout.
-rustup update stable
-cargo build --locked --release --workspace
-./target/release/QuixiDesk
-```
-
-Run from an active graphical login with a working session D-Bus and Wayland or X11 display. A plain SSH session without a display is insufficient for normal desktop use. For a dedicated X11 test display, set `GDK_BACKEND=x11`; GTK container construction supports both X11 and Wayland. Native build and isolated app tests have been exercised on Ubuntu 26.04 x86_64.
-
-For a portable install, copy the executable, helpers, and resources together:
-
-```sh
-mkdir -p "$HOME/.local/opt/QuixiDesk"
-cp target/release/QuixiDesk target/release/quixi-* "$HOME/.local/opt/QuixiDesk/"
-cp -R resources "$HOME/.local/opt/QuixiDesk/resources"
-QUIXI_RESOURCES_DIR="$HOME/.local/opt/QuixiDesk/resources" "$HOME/.local/opt/QuixiDesk/QuixiDesk"
-```
-
-The destination machine needs GTK 3 and WebKitGTK 4.1 runtime libraries. Build on a compatible Linux distribution; this is not a universal static binary or an AppImage.
-
-### Windows 10 / 11 (native, PowerShell)
-
-Install Git, [Rust for Windows](https://rust-lang.org/tools/install/), and [Visual Studio C++ Build Tools](https://rust-lang.github.io/rustup/installation/windows-msvc.html) with the **Desktop development with C++** workload and a Windows SDK. Use the MSVC Rust toolchain, not the GNU or WSL toolchain. Install the [Microsoft Edge WebView2 Evergreen Runtime](https://developer.microsoft.com/en-us/microsoft-edge/webview2/) if it is not already present. Reopen PowerShell after installation so Cargo and Git are on `PATH`.
-
-From the checkout:
+Use Rust MSVC, Visual Studio C++ Build Tools com Windows SDK e WebView2 Evergreen. Em PowerShell:
 
 ```powershell
-rustup update stable-msvc
-rustup default stable-msvc
 cargo build --locked --release --workspace
 .\target\release\QuixiDesk.exe
 ```
 
-Use a Windows desktop session for normal app interaction. SSH can build and run automated storage tests, but does not provide an interactive desktop. Native shell tools use `cmd.exe` with AutoRun disabled; browser fetching uses Windows' `System32\curl.exe` (included in the tested Windows 10 22H2 installation).
+Para distribuição manual, mantenha os executáveis e `resources/` juntos. `QUIXI_RESOURCES_DIR` seleciona explicitamente os recursos quando necessário.
 
-For a portable install, copy the binaries and resources into a user-owned folder:
+### Variáveis de ambiente
 
-```powershell
-$install = Join-Path $env:LOCALAPPDATA 'Programs\QuixiDesk'
-New-Item -ItemType Directory -Force $install | Out-Null
-Copy-Item .\target\release\*.exe $install
-Copy-Item .\resources (Join-Path $install 'resources') -Recurse -Force
-$env:QUIXI_RESOURCES_DIR = Join-Path $install 'resources'
-& (Join-Path $install 'QuixiDesk.exe')
-```
+- `QUIXI_RESOURCES_DIR`: localização dos arquivos em `resources/`.
+- `QUIXI_WORKSPACE`: workspace padrão do engine; **não dá acesso de arquivos a uma conversa sem pasta selecionada**.
+- `QUIXI_TEST_PROFILE`: perfil isolado para testes, não para uso normal nem para credenciais reais.
+- `QUIXI_AUTOMATION_PORT`: porta loopback de automação (normal: 19455; perfil de teste: 19456). Evite conflitos entre instâncias.
 
-There is no MSI or Windows signing/installer workflow yet. Keep the resources directory available; `QUIXI_RESOURCES_DIR` explicitly selects it when launching outside the source checkout.
+### Testes
 
-### Platform scope and configuration
+```bash
+# Instalador e launcher, com arquivos simulados: não instala pacotes.
+python3 -m unittest discover -s tests/install -v
 
-Native CoreGraphics/AppleScript computer-use integration is macOS-specific. Linux and Windows builds do not currently provide the same native computer-use and folder-picker capabilities. Building the cross-platform shell does not imply full native-feature parity.
-
-`QUIXI_WORKSPACE` overrides the engine's development workspace default, which otherwise uses the source checkout. This does not grant folderless conversations access to that directory: choose a folder in the composer or start a task from a project with a configured folder. `QUIXI_RESOURCES_DIR` overrides resource discovery. Normal app data is stored under the OS user's `.quixi` directory; test profiles below use a separate location. Configure a provider in the app after launch; no API credential is required to compile or run the tests.
-
-### Tests and disposable account profiles
-
-Run the workspace tests with a disposable app profile. On macOS/Linux:
-
-```sh
+# Rust, no Linux/macOS, com perfil descartável:
 QUIXI_TEST_PROFILE="$(mktemp -d)" cargo test --locked --workspace
-./target/release/QuixiDesk --test-profile /tmp/quixi-qa-profile
-# Optional complete account bootstrap fixture:
-./target/release/QuixiDesk --test-profile /tmp/quixi-qa-profile --mock-account /absolute/path/mock-account.json
-```
 
-On Windows, preserve any existing test-profile setting while running tests:
-
-```powershell
-$previousProfile = $env:QUIXI_TEST_PROFILE
-$env:QUIXI_TEST_PROFILE = Join-Path $env:TEMP ('quixi-unit-' + [guid]::NewGuid())
-try { cargo test --locked --workspace } finally { $env:QUIXI_TEST_PROFILE = $previousProfile }
-$profile = Join-Path $env:TEMP 'quixi-qa-profile'
-.\target\release\QuixiDesk.exe --test-profile $profile
-# Optional: append --mock-account C:\absolute\path\mock-account.json
-```
-
-The first profile launch creates `mock-account.json` with a synthetic account. Its `account` object requires a UUID and `memberships` array; `current_user_access` and `featureFlagsOrgUuid` can also be supplied. Providers start unconfigured and are saved separately. The profile contains `data/`, `home/`, `workspace/`, and independent web storage. `QUIXI_TEST_PROFILE` is the equivalent environment option for launching a separate test bundle. `QUIXI_AUTOMATION_PORT` selects its automation port (test default: 19456; normal default: 19455); use distinct ports for concurrent profiles. macOS test web-store isolation requires macOS 14+. This isolates app/account state, not OS permissions or tool filesystem/network access. No OS `HOME` override or real account credential copy is needed.
-
-Conversation records are saved atomically. If the usual session folder is unavailable, QuixiDesk keeps a recovery snapshot under the app data directory's `recovery/` folder and restores it on restart. A persistent notice offers **Retry saving** and **Copy recovery data** for affected conversations. If both save locations fail, keep the app open: normal Quit and window close are blocked until a durable save succeeds. A force kill or power loss can still lose data held only in memory.
-
-After building on Windows, run the targeted storage integration test:
-
-```powershell
-powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\test-windows-storage.ps1
-```
-
-It launches the native WebView2 app with a fresh profile, obstructs only fixture save paths, verifies recovery and restart, exercises **Retry saving**, and checks allowed/blocked native close events. It leaves its JSON results and logs in a newly created temporary directory and restores the caller's environment. This is an automated app-bridge test; manual desktop checks remain separate.
-
-The original interface has a separate development-only Node.js test suite. Node.js is not needed by the production app:
-
-```sh
+# Testes da interface: Node.js é necessário somente nesta etapa.
 npm ci --prefix tests/ui
 node --test tests/ui/*.test.cjs
 python3 scripts/audit-product-assets.py
+
+# Janela real WebKit em Xvfb, após build Linux:
+# Requer python3, xvfb, xauth e dbus-run-session.
+python3 scripts/test-linux-ui.py
 ```
 
-The asset audit rejects imported branding and private font bundles and checks the integrity of redistributable artifact libraries and their licenses. The UI tests cover drafts, attachments, conversation branches, streaming, tool failures, project context, search, schedules, MCP connection forms, sandbox attributes, and concurrent updates; they do not replace native desktop or browser security testing.
+Testes do instalador validam a instalação e o launcher, não o funcionamento de modelos ou da GUI. O smoke test Xvfb também não comprova integração com Sommelier nem controle da tela do ChromeOS.
 
-Native desktop validation and the full E2E catalog remain separate from the automated regression checks.
-
-On Linux, after a release build, run real WebKit frame isolation and navigation checks with `python3 scripts/test-linux-ui.py` (requires `xvfb-run`, `dbus-run-session`, and Python 3). It starts only a local fixture server and disposable profile and records its JSON results in a temporary directory. `--output` and `--port` select an evidence directory and unused automation port.
-
-The [E2E test suite design](docs/testing/E2E_TEST_PLAN.md) defines the proposed full packaged-app suite, fixtures, isolation requirements, and CI rollout; its full runner is not implemented yet.
-
----
-
-## Workspace Architecture
+## Estrutura e documentação
 
 ```text
-QuixiDesk/
-├── crates/
-│   ├── quixi-app/        # Native tao + wry WKWebView shell, custom app:// protocol & original UI
-│   ├── quixi-ipc/        # Desktop service and event router
-│   ├── quixi-engine/     # Session orchestrator, multi-provider LLM router & streaming engine
-│   ├── quixi-mcp/        # Persistent MCP clients, discovery, OAuth, and built-in adapters
-│   ├── quixi-platform/   # macOS CoreGraphics Computer Use, In-App Browser Use & SafeFS sandbox
-│   ├── quixi-workspace/  # Native file indexer, git pool engine, transcript search & PTY shell host
-│   ├── quixi-netstack/   # Egress policy & credential management
-│   ├── quixi-proto/      # Shared EIPC protocol types and channel parser
-│   └── quixi-guest-daemon/ # VM guest vsock/virtio daemon
-├── bins/
-│   ├── quixi-mcp-builtin/        # Standalone stdio MCP server (--computer-use / --browser-use)
-│   ├── quixi-chrome-native-host/ # Native messaging host for browser extension bridge
-│   ├── quixi-disclaimer/         # TCC permission disclaimer helper
-│   └── quixi-ssh-askpass/        # Native SSH askpass helper
-└── resources/            # Bundled UI assets, original interface, bootstrap defaults, icons & skills
+tscdesk/
+├── crates/quixi-app/         # Janela nativa e ponte com a interface
+├── crates/quixi-engine/      # Conversas, provedores, tarefas e permissões
+├── crates/quixi-ipc/         # Serviços e eventos da interface
+├── crates/quixi-platform/    # Integrações específicas de cada sistema
+├── crates/quixi-workspace/   # Arquivos, Git e terminal
+├── crates/quixi-mcp/         # Clientes e integrações MCP
+├── crates/quixi-proto/       # Tipos compartilhados e caminhos
+├── bins/                    # Helpers executáveis
+├── resources/               # Interface, ícones, defaults e skills
+└── scripts/                 # Instalação, empacotamento e testes
 ```
 
----
+- [Checklist de validação em um Chromebook](docs/chromeos.md)
+- [Arquitetura](ARCHITECTURE.md)
+- [Guia de MCP](docs/mcp.md)
+- [Subagentes](docs/subagents.md)
+- [Contexto de tarefas](docs/scoped-task-context.md)
+- [Plano E2E — não é um runner completo implementado](docs/testing/E2E_TEST_PLAN.md)
+- [Ativar Linux no Chromebook — Google](https://support.google.com/chromebook/answer/9145439?hl=pt-BR)
+- [Crostini, compartilhamento e limites — Chromium](https://www.chromium.org/chromium-os/developer-library/guides/containers/containers-and-vms/)
+- [Dependências e plataformas do Wry](https://github.com/tauri-apps/wry#platform-specific-notes)
 
-## License
+### Capturas de tela
 
-Released under the **[MIT License](LICENSE)**.
+As imagens abaixo mostram o QuixiDesk original no macOS, com dados de demonstração. Não são capturas de uma execução no ChromeOS.
+
+![Conversa e ferramentas](docs/screenshots/quixidesk-conversation.jpg)
+![Organização por projeto](docs/screenshots/quixidesk-projects.jpg)
+
+## Origem e licença
+
+Baseado no trabalho do QuixiDesk; mantidos os avisos e a [licença MIT](LICENSE). O desenvolvimento original também reconhece a contribuição do [REA — Reverse Engineer Anything](https://github.com/morluto/rea). Recursos e dependências redistribuídos mantêm seus próprios avisos e licenças em `resources/licenses/`, `resources/artifact-libs/licenses/` e `vendor/`.

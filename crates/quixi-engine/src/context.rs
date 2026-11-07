@@ -193,12 +193,16 @@ impl QuixiEngine {
         cancelled: &AtomicBool,
         force: bool,
     ) -> Result<(bool, Option<(String, usize)>), String> {
+        let ai_request = self.provider_manager.ai_control.start_request()?;
+        let _request_scope = ai_request.enter();
+        let stopped = || self.ai_stopped(cancelled) || ai_request.cancelled();
+        if stopped() { return Err("Task stopped.".into()); }
         let limit = self.model_context_window(model);
         let threshold = (limit * 3 / 5).min(limit.saturating_sub(65_536).max(limit * 3 / 5));
         if !force && estimated_tokens(messages) < threshold {
             return Ok((false, None));
         }
-        if cancelled.load(Ordering::SeqCst) {
+        if stopped() {
             return Err("Task stopped.".into());
         }
         // Stage 1: Model-free deterministic pruning of oversized older tool outputs.
@@ -209,6 +213,7 @@ impl QuixiEngine {
         let split=split_point(messages).ok_or("This request is too large for the selected model. Use a larger-context model or a smaller attachment.")?;
         let mut request = messages[..split].to_vec();
         request.push(json!({"role":"user","content":COMPACTION_INSTRUCTION}));
+        if stopped() { return Err("Task stopped.".into()); }
         let summary=self.provider_manager.complete_turn_with_tools_for_provider(&request,&json!([]),Some(model),provider,&mut |_|{})
             .filter(|t|!t.text.trim().is_empty()&&!t.text.starts_with("Provider error:")&&t.tool_calls.is_empty());
         // Condensing is best effort. The full transcript is already stored, so a summariser that
@@ -221,7 +226,7 @@ impl QuixiEngine {
                 split.saturating_sub(1)
             ),
         };
-        if cancelled.load(Ordering::SeqCst) {
+        if stopped() {
             return Err("Task stopped.".into());
         }
         let shadowed = split.saturating_sub(1);
@@ -236,6 +241,11 @@ impl QuixiEngine {
     /// Manual `/compact` command: condenses stored conversation history into a durable
     /// `compaction_checkpoint` while keeping every earlier UI message intact in scrollback.
     pub fn compact_session_now(&self, session_id: &str) -> Value {
+        let ai_request = match self.provider_manager.ai_control.start_request() {
+            Ok(request) => request,
+            Err(message) => return json!({"error":message}),
+        };
+        let _request_scope = ai_request.enter();
         let (is_running, model, transcript) = if let Some(s) = self.agent_sessions.read().get(session_id) {
             (s.is_running, s.model.clone(), s.buffered_messages.clone())
         } else if let Some(s) = self.code_sessions.read().get(session_id) {
@@ -257,6 +267,7 @@ impl QuixiEngine {
         req.extend_from_slice(&history[..split]);
         req.push(json!({"role": "user", "content": COMPACTION_INSTRUCTION}));
         let resolved = self.provider_manager.resolve_connected_model(if model.is_empty() { None } else { Some(&model) });
+        if ai_request.cancelled() { return json!({"error":"Task stopped."}); }
         let summary_text = self
             .provider_manager
             .complete_turn_with_tools(&req, &json!([]), Some(&resolved), |_| {})
@@ -269,6 +280,8 @@ impl QuixiEngine {
                 )
             });
 
+        let _admission = self.ai_submission.lock();
+        if ai_request.cancelled() { return json!({"error":"Task stopped; late compaction result suppressed."}); }
         let checkpoint = json!({
             "type": "compaction_checkpoint",
             "uuid": Uuid::new_v4().to_string(),

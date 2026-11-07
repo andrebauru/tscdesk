@@ -251,7 +251,7 @@ impl QuixiEngine {
         requested_provider: Option<&str>,
         cancelled: &AtomicBool,
     ) -> Result<(String, Option<String>), String> {
-        if cancelled.load(Ordering::SeqCst) {
+        if self.ai_stopped(cancelled) {
             return Err("Task stopped before delegation.".into());
         }
         let request_id = Uuid::new_v4().to_string();
@@ -286,7 +286,7 @@ impl QuixiEngine {
         self.permission_event(session_id, "tool_permission_requested");
         let start = Instant::now();
         let outcome = loop {
-            if cancelled.load(Ordering::SeqCst) {
+            if self.ai_stopped(cancelled) {
                 break 2;
             }
             let decision = signal.load(Ordering::SeqCst);
@@ -300,7 +300,7 @@ impl QuixiEngine {
         };
         self.pending_approvals.write().remove(&request_id);
         self.permission_event(session_id, "tool_permission_changed");
-        if outcome != 1 || cancelled.load(Ordering::SeqCst) {
+        if outcome != 1 || self.ai_stopped(cancelled) {
             return Err("Subagent model request was not approved or the task was stopped. No subagent ran.".into());
         }
         let choice = selected.lock().clone();
@@ -360,7 +360,7 @@ impl QuixiEngine {
         self.permission_event(session_id, "tool_permission_requested");
         let start = Instant::now();
         let outcome = loop {
-            if cancelled.load(Ordering::SeqCst) {
+            if self.ai_stopped(cancelled) {
                 break 2;
             }
             let d = signal.load(Ordering::SeqCst);
@@ -374,7 +374,7 @@ impl QuixiEngine {
         };
         self.pending_approvals.write().remove(&request_id);
         self.permission_event(session_id, "tool_permission_changed");
-        if cancelled.load(Ordering::SeqCst) {
+        if self.ai_stopped(cancelled) {
             return ("Task stopped during plan review.".into(), true);
         }
         let payload = reply.lock().clone().unwrap_or_else(|| json!({}));
@@ -453,7 +453,7 @@ impl QuixiEngine {
         let start = Instant::now();
         let mut timed_out = false;
         let outcome = loop {
-            if cancelled.load(Ordering::SeqCst) {
+            if self.ai_stopped(cancelled) {
                 break 2;
             }
             let d = signal.load(Ordering::SeqCst);
@@ -468,7 +468,7 @@ impl QuixiEngine {
         };
         self.pending_approvals.write().remove(&request_id);
         self.permission_event(session_id, "tool_permission_changed");
-        if cancelled.load(Ordering::SeqCst) {
+        if self.ai_stopped(cancelled) {
             return ("Task stopped while waiting for user answer.".into(), true);
         }
         if timed_out && outcome == 0 {
@@ -498,11 +498,16 @@ impl QuixiEngine {
         self.execute_tool_with_approval_and_mcp_identity(session_id,call_id,name,input,cwd,fallback_mode,cancelled,None)
     }
     pub(crate) fn execute_tool_with_approval_and_mcp_identity(&self, session_id:&str,call_id:&str,name:&str,input:&Value,cwd:&str,fallback_mode:&str,cancelled:&AtomicBool,expected:Option<&str>)->(String,bool){
+        let ai_request = match self.provider_manager.ai_control.start_request() {
+            Ok(request) => request,
+            Err(message) => return (message, true),
+        };
+        let _request_scope = ai_request.enter();
         if cwd.trim().is_empty() && crate::chat_workflows::needs_workspace(name) {
             return ("No folder is selected for this conversation. Ask the user to choose a folder before reading files, making edits, or running commands. No action was performed.".into(),true);
         }
         if let Err(error)=agent_tools::validate_input(name,input) {return (error,true);}
-        if cancelled.load(Ordering::SeqCst) {return ("Task stopped. No action performed.".into(),true);}
+        if self.ai_stopped(cancelled) || ai_request.cancelled() {return ("Task stopped. No action performed.".into(),true);}
 
         // Monotonic Plan Mode guard: block mutations & shell execution while planning.
         if self.collaboration.is_plan_active(session_id)
@@ -601,6 +606,7 @@ impl QuixiEngine {
         let needs=|mode:&str| agent_tools::requires_approval_with_host(name,input,mode,&self.mcp_host) || (outside&&!matches!(mode,"auto"|"bypassPermissions"));
         let mode=self.current_permission_mode(session_id,fallback_mode);
         let execute = |execution_mode: &str| -> (String, bool) {
+            if self.ai_stopped(cancelled) || ai_request.cancelled() { return ("Task stopped. No action performed.".into(), true); }
             let raw_out = if name == "Artifact" {
                 self.create_local_artifact(session_id, input)
             } else if name == crate::workflows::TOOL_WORKING_DIRECTORY {
@@ -627,6 +633,8 @@ impl QuixiEngine {
                         additional_writable_roots: vec![],
                         session_temp_dir: None,
                     };
+                    let _admission = self.ai_submission.lock();
+                    if self.ai_stopped(cancelled) || ai_request.cancelled() { return ("Task stopped. No action performed.".into(), true); }
                     match self.jobs.start_bash(
                         session_id,
                         input["description"].as_str().unwrap_or(cmd_str),
@@ -681,6 +689,7 @@ impl QuixiEngine {
                 let enter = input.get("enter").and_then(Value::as_bool).unwrap_or(true);
                 match quixi_workspace::changes::WorktreeManager::create_worktree(Path::new(cwd), wt_name) {
                     Ok(info) => {
+                        if self.ai_stopped(cancelled) || ai_request.cancelled() { return ("Task stopped after worktree creation; session was not changed.".into(), true); }
                         if enter {
                             if let Some(new_cwd) = info["path"].as_str() {
                                 if let Some(s) = self.agent_sessions.write().get_mut(session_id) {
@@ -737,6 +746,7 @@ impl QuixiEngine {
                     cancelled,
                     mcp_identity.as_deref(),
                 );
+                if self.ai_stopped(cancelled) || ai_request.cancelled() { return ("Task stopped; late tool result suppressed.".into(), true); }
                 if !res.1 && matches!(name, agent_tools::TOOL_READ | agent_tools::TOOL_WRITE | agent_tools::TOOL_EDIT) {
                     let target = agent_tools::resolve_path(
                         input["file_path"].as_str().unwrap_or(""),
@@ -769,7 +779,7 @@ impl QuixiEngine {
                 Err(fallback) => ai_review_note = Some(fallback),
             }
         }
-        if cancelled.load(Ordering::SeqCst) {return ("Task stopped. No action performed.".into(),true);}
+        if self.ai_stopped(cancelled) || ai_request.cancelled() {return ("Task stopped. No action performed.".into(),true);}
         let request_id=Uuid::new_v4().to_string();
         let signal=Arc::new(AtomicU8::new(0));
         self.pending_approvals.write().insert(request_id.clone(),PendingToolApproval {
@@ -781,7 +791,7 @@ impl QuixiEngine {
         self.permission_event(session_id,"tool_permission_requested");
         let start=Instant::now();
         let outcome=loop {
-            if cancelled.load(Ordering::SeqCst) {break 2;}
+            if self.ai_stopped(cancelled) || ai_request.cancelled() {break 2;}
             let decision=signal.load(Ordering::SeqCst);
             if decision==1 || decision==2 {break decision;}
             if decision==0 && !needs(&self.current_permission_mode(session_id,fallback_mode)) {break 1;}
@@ -790,7 +800,7 @@ impl QuixiEngine {
         };
         self.pending_approvals.write().remove(&request_id);
         self.permission_event(session_id,"tool_permission_changed");
-        if outcome!=1 || cancelled.load(Ordering::SeqCst) {
+        if outcome!=1 || self.ai_stopped(cancelled) || ai_request.cancelled() {
             return ("The action was not approved or the task was stopped. No action was performed. Do not retry it without a new user request.".into(),true);
         }
         execute("auto")
@@ -805,6 +815,8 @@ impl QuixiEngine {
         input: &Value,
         cwd: &str,
     ) -> Result<Option<String>, String> {
+        let ai_request = self.provider_manager.ai_control.start_request()?;
+        let _request_scope = ai_request.enter();
         let model = self
             .agent_sessions
             .read()
@@ -827,10 +839,12 @@ impl QuixiEngine {
                 "content": format!("Workspace: {cwd}\nTool: {tool_name}\nArguments: {args_preview}")
             }),
         ];
+        if ai_request.cancelled() { return Err("Task stopped.".into()); }
         let turn = self
             .provider_manager
             .complete_turn_with_tools(&review_messages, &json!([]), model.as_deref(), |_| {})
             .ok_or_else(|| "Smart Auto safety reviewer unavailable; requesting human approval.".to_string())?;
+        if ai_request.cancelled() { return Err("Task stopped; late safety review suppressed.".into()); }
         if turn.stream_error.is_some() || !turn.tool_calls.is_empty() {
             return Err("Smart Auto safety check inconclusive; requesting human approval.".into());
         }

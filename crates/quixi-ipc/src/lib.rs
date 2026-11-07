@@ -238,6 +238,13 @@ impl EipcRouter {
         let now_ms = Utc::now().timestamp_millis() as u64;
 
         match (service, member) {
+            ("Providers", "saveProvider") => self.engine.provider_manager.save_provider(args.first().unwrap_or(&Value::Null)),
+            ("Providers", "testProvider") => self.engine.provider_manager.test_provider(args.first().unwrap_or(&Value::Null)),
+            ("Providers", "getAgentState") => self.engine.agent_state(),
+            ("Providers", "setAgentState") => match args.first().and_then(|v| v.get("paused")).and_then(Value::as_bool) {
+                Some(paused) => self.engine.set_agent_paused(paused),
+                None => json!({"error":"setAgentState requires {paused: boolean}."}),
+            },
             // --- AppFeatures & AppPreferences & AppConfig ---
             ("AppFeatures", "getSupportedFeatures") => self.engine.desktop_features.clone(),
             ("AppPreferences", "getPreferences") | ("Preferences", "getPreferences") => {
@@ -2789,6 +2796,28 @@ mod tests {
     use quixi_proto::EIPC_UUID_MAIN;
     use std::path::PathBuf;
 
+    #[test]
+    fn providers_agent_control_rpc_uses_global_local_control() {
+        let root = std::env::temp_dir().join(format!("quixi-ipc-ai-control-{}", Uuid::new_v4()));
+        let engine = QuixiEngine::new_with_data_dir(root.join("resources"), root.clone());
+        let router = EipcRouter::new(engine.clone());
+        assert_eq!(router.dispatch_service("quixi.web", "Providers", "getAgentState", &[])["status"], "available");
+        assert_eq!(router.dispatch_service("quixi.web", "Providers", "setAgentState", &[json!({"paused":true})])["paused"], true);
+        assert_eq!(engine.agent_state()["paused"], true);
+        // Exercise the exact frontend aliases without admitting any remote request.
+        let health = router.dispatch_service("quixi.web", "Providers", "testProvider", &[json!({"providerId":"runpod-ollama"})]);
+        assert_eq!(health["ok"], false);
+        assert_eq!(health["inferenceVerified"], false);
+        let invalid_save = router.dispatch_service("quixi.web", "Providers", "saveProvider", &[json!({"providerId":"runpod-ollama","endpointId":"../invalid"})]);
+        assert!(invalid_save["error"].is_string());
+        assert!(router.dispatch_service("quixi.web", "Providers", "setAgentState", &[json!({"paused":"false"})])["error"].is_string());
+        assert_eq!(router.dispatch_service("quixi.web", "Providers", "setAgentState", &[json!({"paused":false})])["paused"], false);
+        assert!(engine.agent_sessions.read().is_empty());
+        assert!(engine.code_sessions.read().is_empty());
+        drop(router); drop(engine);
+        fs::remove_dir_all(root).unwrap();
+    }
+
     fn workspace_root() -> PathBuf {
         PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../..")
     }
@@ -3008,7 +3037,12 @@ mod tests {
 
     #[test]
     fn test_owned_session_lifecycles() {
-        let (_engine, router) = make_router();
+        let (engine, router) = make_router();
+        // Lifecycle tests need no checkout snapshot or tools. Keep the workspace small,
+        // writable and isolated from the user's repository (including its dirty files).
+        let workspace = engine.data_dir.join("workspace");
+        std::fs::create_dir_all(&workspace).unwrap();
+        std::fs::write(workspace.join("fixture.txt"), "isolated IPC workspace\n").unwrap();
 
         // 2. Test full LocalAgentModeSessions (Cowork / 3P Chat) lifecycle
         let start_agent = router
@@ -3018,9 +3052,9 @@ mod tests {
                     EIPC_UUID_MAIN
                 ),
                 args: vec![json!({
-                    "message": "Check git status",
+                    "message": "Say hello. Do not use tools or inspect files.",
                     "sessionType": "cowork",
-                    "userSelectedFolders": [workspace_root()]
+                    "userSelectedFolders": [workspace]
                 })],
             })
             .result
@@ -3029,9 +3063,11 @@ mod tests {
         assert!(agent_sid.starts_with("local_"));
 
         for _ in 0..100 {
-            if _engine.agent_sessions.read().get(&agent_sid).is_some_and(|session| !session.is_running) { break; }
+            if engine.agent_sessions.read().get(&agent_sid).is_some_and(|session| !session.is_running) { break; }
             std::thread::sleep(std::time::Duration::from_millis(20));
         }
+        assert!(engine.agent_sessions.read().get(&agent_sid).is_some_and(|session| !session.is_running),
+            "agent turn did not complete in the isolated workspace");
 
         let transcript = router
             .dispatch(&EipcInvokePayload {
@@ -3043,7 +3079,12 @@ mod tests {
             })
             .result
             .unwrap();
-        assert!(transcript.as_array().unwrap().len() >= 2);
+        assert!(transcript.as_array().unwrap().len() >= 2, "{transcript}");
+        assert!(transcript.as_array().unwrap().iter().any(|message|
+            message["type"] == "assistant"
+                && message.pointer("/message/content/0/text").and_then(Value::as_str)
+                    == Some("No connected provider returned a response. Check Providers and try again.")),
+            "unconfigured provider must report its failure, not fabricate a reply: {transcript}");
 
         // 3. Test full LocalSessions (Code / CCD) lifecycle
         let start_code = router
@@ -3053,8 +3094,8 @@ mod tests {
                     EIPC_UUID_MAIN
                 ),
                 args: vec![json!({
-                    "prompt": "List files in workspace",
-                    "cwd": workspace_root()
+                    "prompt": "Say hello. Do not use tools or inspect files.",
+                    "cwd": workspace
                 })],
             })
             .result
@@ -3064,9 +3105,11 @@ mod tests {
         assert!(!code_sid.starts_with("local_cli_"));
 
         for _ in 0..100 {
-            if _engine.code_sessions.read().get(&code_sid).is_some_and(|session| !session.turn_running) { break; }
+            if engine.code_sessions.read().get(&code_sid).is_some_and(|session| !session.turn_running) { break; }
             std::thread::sleep(std::time::Duration::from_millis(20));
         }
+        assert!(engine.code_sessions.read().get(&code_sid).is_some_and(|session| !session.turn_running),
+            "code turn did not complete in the isolated workspace");
 
         let code_transcript = router
             .dispatch(&EipcInvokePayload {
@@ -3078,7 +3121,12 @@ mod tests {
             })
             .result
             .unwrap();
-        assert!(code_transcript.as_array().unwrap().len() >= 2);
+        assert!(code_transcript.as_array().unwrap().len() >= 2, "{code_transcript}");
+        assert!(code_transcript.as_array().unwrap().iter().any(|message|
+            message["type"] == "assistant"
+                && message.pointer("/message/content/0/text").and_then(Value::as_str)
+                    == Some("No connected provider returned a response. Check Providers and try again.")),
+            "unconfigured provider must report its failure: {code_transcript}");
 
         // Clean up persisted test session files and verify delete -> updateSession -> getSession
         // never resurrects a deleted session or creates an empty-sessionId "Untitled" task
@@ -3238,7 +3286,66 @@ mod tests {
         assert!(multi_ids.contains(&"grok-4"));
         assert!(!multi_ids.contains(&"claude-sonnet-4-6"));
 
-        // 4. Verify `stream_event` emission sequence and model resolution during LocalAgentModeSessions
+        // 4. Catalog-only OAuth configuration has no credentials and cannot stream.
+        // Keep the same model, but exercise the real HTTP/SSE adapter with a keyless
+        // localhost custom provider; no production provider or fallback is involved.
+        let workspace = engine.data_dir.join("workspace");
+        std::fs::create_dir_all(&workspace).unwrap();
+        std::fs::write(workspace.join("fixture.txt"), "isolated IPC workspace\n").unwrap();
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        listener.set_nonblocking(true).unwrap();
+        {
+            let mut st = engine.provider_manager.state.write();
+            st.active_provider = "custom".into();
+            for p in &mut st.providers {
+                p.configured = p.id == "custom";
+                if p.id == "custom" {
+                    p.auth_mode = "api_key".into();
+                    p.api_format = "openai".into();
+                    p.base_url = format!("http://{}/v1", listener.local_addr().unwrap());
+                    p.selected_model = "gpt-6.1-sol".into();
+                }
+            }
+        }
+        let server = std::thread::spawn(move || {
+            use std::io::{BufRead, Read, Write};
+            let deadline = std::time::Instant::now() + std::time::Duration::from_secs(2);
+            let mut stream = loop {
+                match listener.accept() {
+                    Ok((stream, _)) => break stream,
+                    Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {
+                        assert!(std::time::Instant::now() < deadline, "local fixture received no request");
+                        std::thread::sleep(std::time::Duration::from_millis(10));
+                    }
+                    Err(error) => panic!("local fixture accept: {error}"),
+                }
+            };
+            stream.set_read_timeout(Some(std::time::Duration::from_secs(2))).unwrap();
+            stream.set_write_timeout(Some(std::time::Duration::from_secs(2))).unwrap();
+            let mut reader = std::io::BufReader::new(stream.try_clone().unwrap());
+            let mut line = String::new();
+            reader.read_line(&mut line).unwrap();
+            assert!(line.starts_with("POST /v1/chat/completions "), "{line}");
+            let mut length = 0;
+            loop {
+                line.clear();
+                assert!(reader.read_line(&mut line).unwrap() > 0);
+                if line == "\r\n" { break; }
+                assert!(!line.to_ascii_lowercase().starts_with("authorization:"), "keyless fixture sent credentials");
+                if let Some(value) = line.to_ascii_lowercase().strip_prefix("content-length:") {
+                    length = value.trim().parse::<usize>().unwrap();
+                }
+            }
+            let mut body = vec![0; length];
+            reader.read_exact(&mut body).unwrap();
+            let request: Value = serde_json::from_slice(&body).unwrap();
+            assert_eq!(request["model"], "gpt-6.1-sol");
+            assert_eq!(request["stream"], true);
+            let delta = json!({"choices":[{"delta":{"content":"Local fixture reply."},"finish_reason":null}]});
+            let finish = json!({"choices":[{"delta":{},"finish_reason":"stop"}]});
+            let body = format!("data: {delta}\n\ndata: {finish}\n\ndata: [DONE]\n\n");
+            write!(stream, "HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}", body.len(), body).unwrap();
+        });
         let events = Arc::new(std::sync::Mutex::new(Vec::<Value>::new()));
         let events_clone = Arc::clone(&events);
         engine.set_emitter(Arc::new(move |ch: &str, payload: Value| {
@@ -3254,10 +3361,10 @@ mod tests {
                     EIPC_UUID_MAIN
                 ),
                 args: vec![json!({
-                    "message": "Check git status",
+                    "message": "Say hello. Do not use tools or inspect files.",
                     "model": "claude-sonnet-4-6", // Unconnected model requested by stale caller
                     "sessionType": "cowork",
-                    "userSelectedFolders": [workspace_root()]
+                    "userSelectedFolders": [workspace]
                 })],
             })
             .result
@@ -3266,18 +3373,19 @@ mod tests {
         // Even though caller requested claude-sonnet-4-6, session model resolved to connected gpt-6.1-sol!
         assert_eq!(start_res["model"], "gpt-6.1-sol");
 
+        // message_stop precedes final assistant persistence. Wait for turn completion,
+        // not just the SSE marker, within the original two-second budget.
         for _ in 0..50 {
+            if engine.agent_sessions.read().get(&sid).is_some_and(|session| !session.is_running) { break; }
             std::thread::sleep(std::time::Duration::from_millis(40));
-            let has_stop = events.lock().unwrap().iter().any(|ev| {
-                ev.get("sessionId").and_then(|v| v.as_str()) == Some(&sid)
-                    && ev.pointer("/message/event/type").and_then(|v| v.as_str())
-                        == Some("message_stop")
-            });
-            if has_stop {
-                break;
-            }
         }
-
+        server.join().unwrap();
+        assert!(engine.agent_sessions.read().get(&sid).is_some_and(|session| !session.is_running),
+            "local fixture turn did not finish");
+        let transcript = engine.agent_sessions.read().get(&sid).unwrap().buffered_messages.clone();
+        assert!(transcript.iter().any(|message| message["type"] == "assistant"
+            && message.pointer("/message/content/0/text").and_then(Value::as_str) == Some("Local fixture reply.")),
+            "expected real fixture output, not provider fallback: {transcript:?}");
         let recorded = events.lock().unwrap().clone();
         let mut saw_message_start = false;
         let mut saw_block_start = false;
@@ -3397,27 +3505,39 @@ fn linux_os_release() -> (String, String) {
 }
 
 #[cfg(target_os = "linux")]
+fn linux_cpu_model(cpuinfo: &str) -> Option<String> {
+    // ARM Chromebooks do not necessarily expose x86's "model name" field.
+    for field in ["model name", "Hardware", "Model", "Processor"] {
+        if let Some(value) = cpuinfo.lines().find_map(|line| {
+            let (key, value) = line.split_once(':')?;
+            (key.trim() == field && !value.trim().is_empty()).then(|| value.trim().to_string())
+        }) {
+            return Some(value);
+        }
+    }
+    None
+}
+
+#[cfg(target_os = "linux")]
+fn linux_memory_bytes(meminfo: &str) -> Option<u64> {
+    meminfo.lines().find_map(|line| {
+        let (key, value) = line.split_once(':')?;
+        if key.trim() != "MemTotal" { return None; }
+        let mut parts = value.split_whitespace();
+        let kb = parts.next()?.parse::<u64>().ok()?;
+        if parts.next()? != "kB" { return None; }
+        kb.checked_mul(1024)
+    })
+}
+
+#[cfg(target_os = "linux")]
 fn linux_system_info() -> serde_json::Value {
     let (pretty, version) = linux_os_release();
     let cpu = std::fs::read_to_string("/proc/cpuinfo")
-        .ok()
-        .and_then(|t| {
-            t.lines()
-                .find(|l| l.starts_with("model name"))
-                .and_then(|l| l.split(':').nth(1))
-                .map(|s| s.trim().to_string())
-        })
-        .unwrap_or_else(|| "unknown".to_string());
+        .ok().and_then(|text| linux_cpu_model(&text))
+        .unwrap_or_else(|| format!("{} (model unavailable)", std::env::consts::ARCH));
     let total_memory = std::fs::read_to_string("/proc/meminfo")
-        .ok()
-        .and_then(|t| {
-            t.lines()
-                .find(|l| l.starts_with("MemTotal:"))
-                .and_then(|l| l.split_whitespace().nth(1))
-                .and_then(|n| n.parse::<u64>().ok())
-                .map(|kb| kb * 1024)
-        })
-        .unwrap_or(0);
+        .ok().and_then(|text| linux_memory_bytes(&text)).unwrap_or(0);
     serde_json::json!({
         "app_version": env!("CARGO_PKG_VERSION"),
         "os_version": version,
@@ -3464,8 +3584,29 @@ mod linux_info_tests {
         let cpu = info["cpu_model"].as_str().unwrap_or_default();
         assert!(!cpu.is_empty() && cpu != "unknown", "cpu_model must resolve: {cpu}");
         let mem = info["total_memory"].as_u64().unwrap_or(0);
-        assert!(mem > 1_000_000_000, "total_memory must be real bytes, got {mem}");
+        let expected_memory = std::fs::read_to_string("/proc/meminfo")
+            .ok().and_then(|text| linux_memory_bytes(&text)).unwrap_or(0);
+        assert_eq!(mem, expected_memory, "memory must reflect the container, not a minimum hardware assumption");
         assert_eq!(info["is_msix"], false);
+    }
+
+    #[test]
+    fn cpu_parser_supports_x86_and_arm_chromebooks() {
+        assert_eq!(linux_cpu_model("processor : 0\nmodel name : Intel CPU\n"), Some("Intel CPU".into()));
+        assert_eq!(linux_cpu_model("Processor : ARMv7 Processor\nHardware : Chromebook SoC\n"), Some("Chromebook SoC".into()));
+        assert_eq!(linux_cpu_model("Model : ARM64 board\n"), Some("ARM64 board".into()));
+        assert_eq!(linux_cpu_model("Processor : AArch64 Processor\n"), Some("AArch64 Processor".into()));
+        assert_eq!(linux_cpu_model("processor : 0\nCPU implementer : 0x41\n"), None);
+        assert_eq!(linux_cpu_model("model name : \n"), None);
+    }
+
+    #[test]
+    fn memory_parser_handles_small_containers_and_invalid_values() {
+        assert_eq!(linux_memory_bytes("MemTotal: 524288 kB\n"), Some(536870912));
+        assert_eq!(linux_memory_bytes("MemTotal: invalid kB\n"), None);
+        assert_eq!(linux_memory_bytes("MemTotal: 100 MB\n"), None);
+        assert_eq!(linux_memory_bytes("MemTotal: 18446744073709551615 kB\n"), None);
+        assert_eq!(linux_memory_bytes(""), None);
     }
 
     #[test]

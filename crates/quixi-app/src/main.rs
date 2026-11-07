@@ -928,8 +928,10 @@ fn main() -> anyhow::Result<()> {
                     };
                 }
                 if path == "/__eipc__/diag" {
-                    if let Ok(val) = serde_json::from_slice::<Value>(request.body()) {
-                        tracing::info!("[WebView Diag] {}", val);
+                    if serde_json::from_slice::<Value>(request.body()).is_ok() {
+                        // Diagnostic bodies may contain provider keys or private prompt data.
+                        // Never copy arbitrary WebView payloads into application logs.
+                        tracing::info!("[WebView Diag] diagnostic received (payload omitted)");
                         let _ = std::io::Write::flush(&mut std::io::stdout());
                     }
                     return build_http_response(200, "application/json", b"{\"ok\":true}".to_vec());
@@ -1114,8 +1116,9 @@ fn main() -> anyhow::Result<()> {
                         let clipboard = gtk::Clipboard::get(&gtk::gdk::SELECTION_CLIPBOARD);
                         clipboard.set_text(&text);
                         clipboard.store();
-                        // Preserve the existing in-app clipboard read bridge as well.
-                        quixi_platform::ComputerUse::write_clipboard(&text).map_err(|error| error.to_string())
+                        // GTK already owns the clipboard; cache only, without another native writer.
+                        quixi_platform::ComputerUse::record_clipboard_write(&text);
+                        Ok(())
                     } else { Err("GTK display unavailable".to_string()) };
                     let _ = tx.send(result);
                 }

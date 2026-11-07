@@ -215,6 +215,9 @@ impl QuixiEngine {
             return json!({"error":"Invalid schedule identifier."});
         }
         let _guard = self.schedule_dispatch.lock();
+        // Serialize dispatch with FINAL so a run admitted just before pause has a live
+        // cancellation token; it cannot turn into a fresh automatic launch after INICIAR.
+        let _submission = self.chat_submission.lock();
         let Some(mut task) = self.scheduled_tasks.read().get(id).cloned() else {
             return json!({"error":"Schedule not found."});
         };
@@ -231,7 +234,11 @@ impl QuixiEngine {
                 .get(sid)
                 .is_some_and(|s| s.is_running)
         });
-        let problem = if busy {
+        let problem = if self.provider_manager.ai_control.is_paused() {
+            Some(agent_control::PAUSED_MESSAGE)
+        } else if agent_control::local_command(task["prompt"].as_str().unwrap_or_default(), false).is_some() {
+            Some("Comandos locais FINAL/INICIAR não podem ser executados por agendamentos.")
+        } else if busy {
             Some("Previous run is still active; this occurrence was skipped.")
         } else if automatic && now.saturating_sub(due) > 60_000 {
             Some("Scheduled time was missed while the app was closed or asleep. No catch-up task was run.")

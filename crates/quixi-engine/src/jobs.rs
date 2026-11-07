@@ -454,6 +454,17 @@ impl JobRegistry {
         }
     }
 
+    /// Global AI pause affects agent-owned background jobs, not interactive IDE terminals.
+    pub(crate) fn cancel_all(&self) {
+        for job in self.jobs.lock().values_mut() {
+            if matches!(job.status.as_str(), "running" | "stopping") {
+                job.status = "stopping".into();
+                job.detail = Some("AI paused by FINAL".into());
+                job.cancel.store(true, Ordering::SeqCst);
+            }
+        }
+    }
+
     /// Drains one-time completion notices for settled background jobs not yet collected by `JobOutput`.
     pub fn take_settlement_notices(&self, owner: &str) -> Vec<String> {
         let mut map = self.jobs.lock();

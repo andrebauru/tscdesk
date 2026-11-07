@@ -390,6 +390,28 @@ summary {
 .topbar button {
   font-size: 12px;
 }
+.agent-controls {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  flex-shrink: 0;
+  -webkit-app-region: no-drag;
+}
+#agent-status {
+  font-size: 12px;
+  color: var(--muted);
+  white-space: nowrap;
+}
+#agent-status[data-status="available"] { color: var(--accent); }
+#agent-status[data-status="processing"] { color: var(--text); }
+#agent-status[data-status="cancel_error"] { color: var(--danger); }
+#agent-toggle { white-space: nowrap; }
+.model-catalog-refresh[hidden] { display: none !important; }
+@media (max-width: 720px) {
+  .agent-controls { flex-direction: column; gap: 0; }
+  #agent-status, .topbar #agent-toggle { font-size: 10px; }
+  .topbar #agent-toggle { min-height: 22px; padding: 2px 6px; }
+}
 .page {
   flex: 1;
   min-height: 0;

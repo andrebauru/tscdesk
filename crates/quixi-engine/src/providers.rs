@@ -11,6 +11,9 @@ use std::path::PathBuf;
 use std::time::{Instant, SystemTime, UNIX_EPOCH};
 use uuid::Uuid;
 
+#[path = "provider_tool_runpod.rs"]
+mod provider_tool_runpod;
+
 const OPENAI_CODEX_CLIENT_ID: &str = "app_EMoamEEZ73f0CkXaXp7hrann";
 const OPENAI_CODEX_AUTHORIZE_URL: &str = "https://auth.openai.com/oauth/authorize";
 const OPENAI_CODEX_TOKEN_URL: &str = "https://auth.openai.com/oauth/token";
@@ -49,7 +52,7 @@ pub struct ProviderModelInfo {
     pub supports_vision: bool,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ProviderEntry {
     pub id: String,
@@ -82,6 +85,19 @@ pub struct ProviderEntry {
     pub context_window: u32,
     pub last_tested_ok: Option<bool>,
     pub last_latency_ms: Option<u64>,
+    // RunPod queue endpoint identifier; credentials use api_key_raw like other providers.
+    #[serde(default)]
+    pub endpoint_id: String,
+}
+
+// Never include raw API keys or OAuth tokens in diagnostic formatting.
+impl std::fmt::Debug for ProviderEntry {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("ProviderEntry")
+            .field("id", &self.id)
+            .field("configured", &self.configured)
+            .finish_non_exhaustive()
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -119,6 +135,7 @@ pub struct ProviderManager {
     persist_lock: parking_lot::Mutex<()>,
     pub state: RwLock<ProvidersStateFile>,
     pub pending_oauth: RwLock<HashMap<String, PendingOAuthSession>>,
+    pub(crate) ai_control: crate::agent_control::AgentControl,
 }
 
 impl ProviderManager {
@@ -152,6 +169,7 @@ impl ProviderManager {
             config_path,
             state: RwLock::new(state),
             pending_oauth: RwLock::new(HashMap::new()),
+            ai_control: crate::agent_control::AgentControl::new(data_dir),
         };
         mgr.persist();
         mgr
@@ -220,6 +238,7 @@ impl ProviderManager {
                 context_window: 200_000,
                 last_tested_ok: None,
                 last_latency_ms: None,
+                endpoint_id: String::new(),
             },
             // 2. Custom Endpoint (Second on the list)
             ProviderEntry {
@@ -250,8 +269,40 @@ impl ProviderManager {
                 context_window: 128_000,
                 last_tested_ok: None,
                 last_latency_ms: None,
+                endpoint_id: String::new(),
             },
-            // 3. OpenAI (Third on the list — supports OAuth!)
+            // RunPod keeps its existing ID and rank; queue API, not an OpenAI/SSE URL.
+            ProviderEntry {
+                id: "runpod-ollama".to_string(),
+                name: "RunPod Serverless".to_string(),
+                subtitle: "Queued Ollama worker · complete text responses only".to_string(),
+                badge: "Auto-scaled".to_string(),
+                category: "cloud".to_string(),
+                priority_rank: 4,
+                supports_oauth: false,
+                oauth_label: None,
+                auth_mode: "api_key".to_string(),
+                api_format: "runpod".to_string(),
+                base_url: "https://api.runpod.ai/v2".to_string(),
+                api_key_masked: String::new(),
+                api_key_raw: String::new(),
+                oauth_access_token: String::new(),
+                oauth_refresh_token: String::new(),
+                oauth_account_label: None,
+                oauth_expires_ms: None,
+                key_placeholder: "runpod_<api_key>".to_string(),
+                env_var: "RUNPOD_API_KEY".to_string(),
+                docs_url: "https://github.com/SvenBrnn/runpod-worker-ollama".to_string(),
+                configured: false,
+                selected_model: String::new(),
+                models: vec![],
+                custom_models: vec![],
+                context_window: 128_000,
+                last_tested_ok: None,
+                last_latency_ms: None,
+                endpoint_id: String::new(),
+            },
+            // 4. OpenAI (Fourth on the list — supports OAuth!)
             ProviderEntry {
                 id: "openai".to_string(),
                 name: "OpenAI".to_string(),
@@ -293,6 +344,7 @@ impl ProviderManager {
                 context_window: 256_000,
                 last_tested_ok: None,
                 last_latency_ms: None,
+                endpoint_id: String::new(),
             },
             // 4. Grok / xAI (Fourth on the list — supports OAuth!)
             ProviderEntry {
@@ -328,6 +380,7 @@ impl ProviderManager {
                 context_window: 256_000,
                 last_tested_ok: None,
                 last_latency_ms: None,
+                endpoint_id: String::new(),
             },
             // 5. Anthropic (Fifth on the list — API Key only, no OAuth)
             ProviderEntry {
@@ -362,6 +415,7 @@ impl ProviderManager {
                 context_window: 200_000,
                 last_tested_ok: None,
                 last_latency_ms: None,
+                endpoint_id: String::new(),
             },
             // 6. Google Gemini
             ProviderEntry {
@@ -396,6 +450,7 @@ impl ProviderManager {
                 context_window: 1_000_000,
                 last_tested_ok: None,
                 last_latency_ms: None,
+                endpoint_id: String::new(),
             },
             // 7. DeepSeek
             ProviderEntry {
@@ -437,6 +492,7 @@ impl ProviderManager {
                 context_window: 1_048_576,
                 last_tested_ok: None,
                 last_latency_ms: None,
+                endpoint_id: String::new(),
             },
             // 8. Groq
             ProviderEntry {
@@ -471,6 +527,7 @@ impl ProviderManager {
                 context_window: 128_000,
                 last_tested_ok: None,
                 last_latency_ms: None,
+                endpoint_id: String::new(),
             },
             // 9. Mistral
             ProviderEntry {
@@ -504,6 +561,7 @@ impl ProviderManager {
                 context_window: 128_000,
                 last_tested_ok: None,
                 last_latency_ms: None,
+                endpoint_id: String::new(),
             },
             // 10. MiniMax
             ProviderEntry {
@@ -537,6 +595,7 @@ impl ProviderManager {
                 context_window: 200_000,
                 last_tested_ok: None,
                 last_latency_ms: None,
+                endpoint_id: String::new(),
             },
             // 11. Zhipu / GLM
             ProviderEntry {
@@ -570,6 +629,7 @@ impl ProviderManager {
                 context_window: 128_000,
                 last_tested_ok: None,
                 last_latency_ms: None,
+                endpoint_id: String::new(),
             },
             // 12. Moonshot / Kimi
             ProviderEntry {
@@ -603,6 +663,7 @@ impl ProviderManager {
                 context_window: 256_000,
                 last_tested_ok: None,
                 last_latency_ms: None,
+                endpoint_id: String::new(),
             },
             // 13. Cohere
             ProviderEntry {
@@ -636,6 +697,7 @@ impl ProviderManager {
                 context_window: 256_000,
                 last_tested_ok: None,
                 last_latency_ms: None,
+                endpoint_id: String::new(),
             },
             // 14. Together AI
             ProviderEntry {
@@ -669,6 +731,7 @@ impl ProviderManager {
                 context_window: 128_000,
                 last_tested_ok: None,
                 last_latency_ms: None,
+                endpoint_id: String::new(),
             },
             // 15. Fireworks AI
             ProviderEntry {
@@ -702,6 +765,7 @@ impl ProviderManager {
                 context_window: 128_000,
                 last_tested_ok: None,
                 last_latency_ms: None,
+                endpoint_id: String::new(),
             },
             // 16. Ollama (Local)
             ProviderEntry {
@@ -736,6 +800,7 @@ impl ProviderManager {
                 context_window: 128_000,
                 last_tested_ok: None,
                 last_latency_ms: None,
+                endpoint_id: String::new(),
             },
             // 17. LM Studio (Local)
             ProviderEntry {
@@ -768,6 +833,7 @@ impl ProviderManager {
                 context_window: 128_000,
                 last_tested_ok: None,
                 last_latency_ms: None,
+                endpoint_id: String::new(),
             },
             // 18. vLLM (Local)
             ProviderEntry {
@@ -800,6 +866,7 @@ impl ProviderManager {
                 context_window: 128_000,
                 last_tested_ok: None,
                 last_latency_ms: None,
+                endpoint_id: String::new(),
             },
             // 19. llama.cpp (Local)
             ProviderEntry {
@@ -832,6 +899,7 @@ impl ProviderManager {
                 context_window: 128_000,
                 last_tested_ok: None,
                 last_latency_ms: None,
+                endpoint_id: String::new(),
             },
         ];
 
@@ -852,7 +920,7 @@ impl ProviderManager {
             return String::new();
         }
         let chars: Vec<char> = trimmed.chars().collect();
-        if chars.len() <= 8 {
+        if chars.len() <= 10 {
             return "••••••••".to_string();
         }
         let prefix: String = chars.iter().take(6).collect();
@@ -904,6 +972,9 @@ impl ProviderManager {
                     continue;
                 };
                 if let Some(entry) = catalog.providers.iter_mut().find(|p| p.id == id) {
+                    if let Some(endpoint) = saved_p.get("endpointId").and_then(Value::as_str) {
+                        entry.endpoint_id = endpoint.to_string();
+                    }
                     if let Some(cfg) = saved_p.get("configured").and_then(|v| v.as_bool()) {
                         entry.configured = cfg;
                     }
@@ -985,6 +1056,20 @@ impl ProviderManager {
                 }
             }
         }
+        if let Some(entry) = catalog.providers.iter_mut().find(|p| p.id == "runpod-ollama") {
+            // Ignore historical editable URLs, formats, masks and stale configured flags.
+            entry.base_url = provider_tool_runpod::API_BASE.to_string();
+            entry.api_format = "runpod".to_string();
+            entry.auth_mode = "api_key".to_string();
+            entry.api_key_masked = if entry.api_key_raw.is_empty() { String::new() } else { "••••••••".to_string() };
+            entry.configured &= provider_tool_runpod::validate_config(&entry.endpoint_id, &entry.api_key_raw, &entry.selected_model).is_ok();
+            entry.oauth_access_token.clear();
+            entry.oauth_refresh_token.clear();
+            for model in &mut entry.models {
+                model.supports_thinking = false;
+                model.supports_vision = false;
+            }
+        }
         // DeepSeek moved from R1-era ids to V4 (deepseek-flash / deepseek-v4-pro, 1M ctx).
         if let Some(ds) = catalog.providers.iter_mut().find(|p| p.id == "deepseek") {
             if let Some(current) = Self::migrate_legacy_model_id("deepseek", &ds.selected_model) {
@@ -1027,7 +1112,12 @@ impl ProviderManager {
     pub fn persist(&self) {
         let _writer=self.persist_lock.lock();
         if self.credential_load_failed {return;}
-        let st = self.state.read();
+        let result = self.persist_state(&self.state.read());
+        *self.credential_error.write() = result.err();
+    }
+
+    // Caller holds persist_lock. The same encrypted, atomic storage serves transactional saves.
+    fn persist_state(&self, st: &ProvidersStateFile) -> Result<(), String> {
         let mut providers_disk = Vec::new();
         for p in &st.providers {
             let mut val = serde_json::to_value(p).unwrap_or_else(|_| json!({}));
@@ -1050,11 +1140,10 @@ impl ProviderManager {
             "subagentModelUserSelected": st.subagent_model_user_selected,
             "providers": providers_disk,
         });
-        let result=crate::credentials::seal(&self.config_path,disk_json).and_then(|document| {
+        crate::credentials::seal(&self.config_path,disk_json).and_then(|document| {
             let bytes=serde_json::to_vec_pretty(&document).map_err(|e|e.to_string())?;
             crate::storage::atomic_write(&self.config_path,&bytes).map_err(|e|e.to_string())
-        });
-        *self.credential_error.write()=result.err();
+        })
     }
 
     pub fn get_public_state(&self) -> Value {
@@ -1076,6 +1165,14 @@ impl ProviderManager {
         } else {
             (String::new(), String::new())
         };
+        let providers: Vec<Value> = st.providers.iter().map(|entry| {
+            let mut public = serde_json::to_value(entry).expect("Provider entry serializes");
+            if entry.id == "runpod-ollama" {
+                // Recompute rather than trust any historical persisted or in-memory mask.
+                public["apiKeyMasked"] = json!(if entry.api_key_raw.is_empty() { "" } else { "••••••••" });
+            }
+            public
+        }).collect();
         json!({
             "credentialStorageError": self.credential_error.read().clone(),
             "onboardingCompleted": st.onboarding_completed && configured_count > 0,
@@ -1086,7 +1183,7 @@ impl ProviderManager {
             "subagentProvider": subagent_provider,
             "subagentModel": subagent_model,
             "subagentModelUserSelected": st.subagent_model_user_selected,
-            "providers": st.providers,
+            "providers": providers,
         })
     }
 
@@ -1098,6 +1195,9 @@ impl ProviderManager {
             .and_then(|v| v.as_str())
             .unwrap_or("openrouter");
 
+        if provider_id == "runpod-ollama" {
+            return self.save_runpod_provider(body);
+        }
         let mut st = self.state.write();
         let Some(existing) = st.providers.iter().find(|p| p.id == provider_id) else {
             return json!({"error":"Unknown provider."});
@@ -1221,6 +1321,69 @@ impl ProviderManager {
         result
     }
 
+    fn save_runpod_provider(&self, body: &Value) -> Value {
+        let _writer = self.persist_lock.lock();
+        let mut state = self.state.write();
+        let mut candidate = state.clone();
+        let entry = candidate.providers.iter_mut().find(|p| p.id == "runpod-ollama").unwrap();
+        let endpoint = match body.get("endpointId") {
+            Some(value) => value.as_str().unwrap_or(""),
+            None => &entry.endpoint_id,
+        };
+        let model = match body.get("selectedModel") {
+            Some(value) => value.as_str().unwrap_or(""),
+            None => &entry.selected_model,
+        };
+        let key = match body.get("apiKey") {
+            Some(value) if value.as_str() == Some("") && !entry.api_key_raw.is_empty() => &entry.api_key_raw,
+            Some(value) if value.as_str() == Some(entry.api_key_masked.as_str()) && !entry.api_key_raw.is_empty() => &entry.api_key_raw,
+            Some(value) => value.as_str().unwrap_or(""),
+            None => &entry.api_key_raw,
+        };
+        if let Err(error) = provider_tool_runpod::validate_config(endpoint, key, model) {
+            return json!({"error":error});
+        }
+        let (endpoint, model, key) = (endpoint.to_string(), model.trim().to_string(), key.to_string());
+        entry.endpoint_id = endpoint;
+        entry.selected_model = model;
+        entry.api_key_raw = key;
+        entry.api_key_masked = "••••••••".to_string();
+        entry.base_url = provider_tool_runpod::API_BASE.to_string();
+        entry.api_format = "runpod".to_string();
+        entry.auth_mode = "api_key".to_string();
+        entry.configured = true;
+        entry.last_tested_ok = None;
+        entry.last_latency_ms = None;
+        entry.oauth_access_token.clear();
+        entry.oauth_refresh_token.clear();
+        // These are user-selected worker models, not a GPU-backed discovery catalog.
+        if !entry.models.iter().any(|m| m.id == entry.selected_model) {
+            entry.models.push(Self::model(&entry.selected_model, &entry.selected_model, entry.context_window, false, false));
+        }
+        for model in &mut entry.models {
+            model.supports_vision = false;
+            model.supports_thinking = false;
+        }
+        let selected = entry.selected_model.clone();
+        if body.get("setAsActive").and_then(Value::as_bool).unwrap_or(true) {
+            candidate.active_provider = "runpod-ollama".to_string();
+            candidate.active_model = selected;
+        }
+        if body.get("completeOnboarding").and_then(Value::as_bool).unwrap_or(false) {
+            candidate.onboarding_completed = true;
+        }
+        if self.persist_state(&candidate).is_err() {
+            *self.credential_error.write() = Some("RunPod credentials could not be saved; previous configuration was preserved.".into());
+            return json!({"error":"RunPod credentials could not be saved; previous configuration was preserved."});
+        }
+        *self.credential_error.write() = None;
+        *state = candidate;
+        drop(state);
+        drop(_writer);
+        // Saving never submits GPU work or probes models, even when refreshModels is supplied.
+        self.get_public_state()
+    }
+
     pub fn remove_provider(&self, body: &Value) -> Value {
         let provider_id = body
             .get("providerId")
@@ -1340,6 +1503,9 @@ impl ProviderManager {
             .get("providerId")
             .and_then(|v| v.as_str())
             .unwrap_or("openrouter");
+        if provider_id == "runpod-ollama" {
+            return self.test_runpod_provider(body, &provider_tool_runpod::Transport::production());
+        }
         let supplied_key = body
             .get("apiKey")
             .and_then(|v| v.as_str())
@@ -1407,17 +1573,17 @@ impl ProviderManager {
                 }
             } else {
                 let models_url = format!("{}/models", base_url);
-                let mut req = http.get(&models_url);
-                if !api_key.is_empty() {
-                    if api_format == "anthropic" {
-                        req = req
-                            .header("x-api-key", &api_key)
-                            .header("anthropic-version", "2023-06-01");
-                    } else {
-                        req = req.header("Authorization", format!("Bearer {}", api_key));
+                    let mut req = http.get(&models_url);
+                    if !api_key.is_empty() {
+                        if api_format == "anthropic" {
+                            req = req
+                                .header("x-api-key", &api_key)
+                                .header("anthropic-version", "2023-06-01");
+                        } else {
+                            req = req.header("Authorization", format!("Bearer {}", api_key));
+                        }
                     }
-                }
-                match req.send() {
+                    match req.send() {
                     Ok(resp) => {
                         let status = resp.status();
                         let catalog = resp.json::<Value>().ok();
@@ -2309,6 +2475,19 @@ impl ProviderManager {
         true
     }
 
+    pub(crate) fn provider_for_model<'a>(state: &'a ProvidersStateFile, model: &str, provider_override: Option<&str>) -> Option<&'a ProviderEntry> {
+        if let Some(id) = provider_override {
+            return state.providers.iter().find(|p| p.configured && p.id == id);
+        }
+        let owns = |p: &&ProviderEntry| p.configured && (p.selected_model == model
+            || p.models.iter().any(|m| m.id == model && Self::is_model_available_for_provider(p, m)));
+        // Shared model IDs (notably Ollama/RunPod) must not silently change the destination.
+        state.providers.iter().filter(|p| p.id == state.active_provider).find(owns)
+            .or_else(|| state.providers.iter().find(owns))
+            .or_else(|| state.providers.iter().find(|p| p.configured && p.id == state.active_provider))
+            .or_else(|| state.providers.iter().find(|p| p.configured))
+    }
+
     /// Formats a clean display name for the model selector dropdown & composer pill.
     fn clean_model_display_name(m: &ProviderModelInfo) -> String {
         let stripped = m
@@ -2380,13 +2559,16 @@ impl ProviderManager {
         let mut st = self.state.write();
         let mut matched_provider_id: Option<String> = None;
 
-        // 1. Prefer a configured provider that owns this model
-        for p in st.providers.iter_mut().filter(|p| p.configured) {
-            if p.models.iter().any(|m| m.id == trimmed) || p.selected_model == trimmed {
-                p.selected_model = trimmed.to_string();
-                matched_provider_id = Some(p.id.clone());
-                break;
-            }
+        // Preserve the user's active provider when two endpoints advertise the same ID.
+        let active_id = st.active_provider.clone();
+        let owns = |p: &ProviderEntry| p.configured
+            && (p.models.iter().any(|m| m.id == trimmed) || p.selected_model == trimmed);
+        let owner = st.providers.iter().position(|p| p.id == active_id && owns(p))
+            .or_else(|| st.providers.iter().position(owns));
+        if let Some(index) = owner {
+            let p = &mut st.providers[index];
+            p.selected_model = trimmed.to_string();
+            matched_provider_id = Some(p.id.clone());
         }
 
         // 2. If no configured provider matched, check if active_provider is configured (custom model)
@@ -2623,24 +2805,9 @@ impl ProviderManager {
         use std::io::BufReader;
 
         let resolved_model = self.resolve_connected_model(model_override);
-        let (provider_id, provider_name, mut model_id, base_url, api_format, auth_mode, mut credential) = {
+        let (provider_id, provider_name, mut model_id, base_url, api_format, auth_mode, mut credential, endpoint_id) = {
             let st = self.state.read();
-            let entry = st
-                .providers
-                .iter()
-                .find(|p| {
-                    p.configured
-                        && (p.selected_model == resolved_model
-                            || p.models.iter().any(|m| {
-                                m.id == resolved_model && Self::is_model_available_for_provider(p, m)
-                            }))
-                })
-                .or_else(|| {
-                    st.providers
-                        .iter()
-                        .find(|p| p.id == st.active_provider && p.configured)
-                })
-                .or_else(|| st.providers.iter().find(|p| p.configured))?;
+            let entry = Self::provider_for_model(&st, &resolved_model, None)?;
 
             let cred = if entry.auth_mode == "oauth" && !entry.oauth_access_token.is_empty() {
                 entry.oauth_access_token.clone()
@@ -2664,8 +2831,30 @@ impl ProviderManager {
                 entry.api_format.clone(),
                 entry.auth_mode.clone(),
                 cred,
+                entry.endpoint_id.clone(),
             )
         };
+
+        if provider_id == "runpod-ollama" {
+            let sys_prompt = if context.is_empty() { crate::prompt_context::text_only(cwd, "") } else { context.to_owned() };
+            let mut messages = vec![json!({"role":"system","content":sys_prompt})];
+            for (role, text) in history {
+                if !text.trim().is_empty() {
+                    // Do not silently reinterpret a tool/result role as a user message.
+                    messages.push(json!({"role":role,"content":text}));
+                }
+            }
+            if history.last().map(|(role, text)| role != "user" || text != prompt).unwrap_or(true) {
+                messages.push(json!({"role":"user","content":prompt}));
+            }
+            let reply = match provider_tool_runpod::complete_runpod_tool_turn(
+                &self.ai_control, &messages, &model_id, &credential, &endpoint_id, &mut on_chunk
+            ) {
+                Ok(turn) => turn.text,
+                Err(error) => error,
+            };
+            return Some((reply, provider_name, model_id));
+        }
 
         // NOTE: a total request timeout used to cut long answers (and DeepSeek thinking
         // turns) off mid-stream, which then fell through to the canned fallback reply.
@@ -3052,8 +3241,7 @@ impl ProviderManager {
     /// Application budgets are conservative envelopes, not promises about an arbitrary gateway.
     pub(crate) fn mcp_tool_budget(&self,model:&str)->crate::mcp_registry::Budget{
         let st=self.state.read();
-        let provider=st.providers.iter().find(|p|p.configured&&(p.selected_model==model||p.models.iter().any(|m|m.id==model&&Self::is_model_available_for_provider(p,m))))
-            .or_else(||st.providers.iter().find(|p|p.id==st.active_provider&&p.configured)).or_else(||st.providers.iter().find(|p|p.configured));
+        let provider=Self::provider_for_model(&st,model,None);
         let Some(p)=provider else{return crate::mcp_registry::Budget{enabled:false,..Default::default()}};
         let mut budget=crate::mcp_registry::Budget::default();
         if p.id=="openai" {budget.max_tools=128;budget.max_bytes=192*1024;}
@@ -3189,29 +3377,13 @@ impl ProviderManager {
     {
         use std::io::BufReader;
 
+        let original_messages = messages;
         let prepared = crate::tool_media::provider_messages(messages);
         let messages = prepared.as_slice();
         let resolved_model = self.resolve_connected_model(model_override);
-        let (provider_id, provider_name, model_id, base_url, api_format, auth_mode, credential, supports_thinking) = {
+        let (provider_id, provider_name, model_id, base_url, api_format, auth_mode, credential, supports_thinking, endpoint_id) = {
             let st = self.state.read();
-            let entry = if let Some(id) = provider_override {
-                st.providers.iter().find(|p|p.configured && p.id == id)?
-            } else { st
-                .providers
-                .iter()
-                .find(|p| {
-                    p.configured
-                        && (p.selected_model == resolved_model
-                            || p.models.iter().any(|m| {
-                                m.id == resolved_model && Self::is_model_available_for_provider(p, m)
-                            }))
-                })
-                .or_else(|| {
-                    st.providers
-                        .iter()
-                        .find(|p| p.id == st.active_provider && p.configured)
-                })
-                .or_else(|| st.providers.iter().find(|p| p.configured))? };
+            let entry = Self::provider_for_model(&st, &resolved_model, provider_override)?;
 
             let cred = if entry.auth_mode == "oauth" && !entry.oauth_access_token.is_empty() {
                 entry.oauth_access_token.clone()
@@ -3240,6 +3412,7 @@ impl ProviderManager {
                 entry.auth_mode.clone(),
                 cred,
                 model_thinks,
+                entry.endpoint_id.clone(),
             )
         };
 
@@ -3248,6 +3421,15 @@ impl ProviderManager {
         }
         if api_format == "anthropic" && !base_url.is_empty() {
             return Some(self.complete_anthropic_tool_turn_with_effort(messages,tools,&model_id,&base_url,&credential,&provider_name,effort_override,&mut on_chunk));
+        }
+        // Text-only queue worker: never send tool schemas or normalized tool/media replay.
+        if provider_id == "runpod-ollama" {
+            return match provider_tool_runpod::complete_runpod_tool_turn(
+                &self.ai_control, original_messages, &model_id, &credential, &endpoint_id, &mut on_chunk
+            ) {
+                Ok(turn) => Some(turn),
+                Err(error) => Some(tool_failure(error, &provider_name, &model_id)),
+            };
         }
         if api_format != "openai" {
             return Some(tool_failure(format!("Tool calling is not supported for provider format {api_format}"), &provider_name, &model_id));
@@ -3959,6 +4141,200 @@ mod provider_validation_tests {
         server.join().unwrap(); drop(manager); std::fs::remove_dir_all(root).unwrap();
     }
 
+}
+
+#[cfg(test)]
+mod runpod_configuration_tests {
+    use super::*;
+    const SECRET: &str = "synthetic-runpod-key-never-log-7654321";
+    fn valid() -> Value {
+        json!({"providerId":"runpod-ollama","endpointId":"fixture-Endpoint_123",
+            "apiKey":SECRET,"selectedModel":"qwen2.5-coder:7b"})
+    }
+
+    #[test]
+    fn encrypted_save_reload_retains_endpoint_and_redacts_every_public_surface() {
+        // cfg(test) credential storage is isolated; never touches the real OS vault.
+        let profile = tempfile::tempdir().unwrap();
+        let path = profile.path().join("providers.json");
+        let manager = ProviderManager::new(&profile.path().to_path_buf());
+        let mut body = valid();
+        body["baseUrl"] = json!("https://arbitrary.invalid/private");
+        body["apiFormat"] = json!("openai");
+        body["refreshModels"] = json!(true);
+        let saved = manager.save_provider(&body);
+        assert!(saved.get("error").is_none());
+        assert!(!saved.to_string().contains(SECRET));
+        let entry = manager.state.read().providers.iter().find(|p|p.id=="runpod-ollama").unwrap().clone();
+        assert_eq!(entry.api_key_raw, SECRET);
+        assert_eq!(entry.api_key_masked, "••••••••");
+        assert_eq!(entry.base_url, provider_tool_runpod::API_BASE);
+        assert_eq!(entry.api_format, "runpod");
+        assert_eq!(entry.name, "RunPod Serverless");
+        assert!(!format!("{entry:?}").contains(SECRET));
+        let disk = fs::read_to_string(&path).unwrap();
+        assert!(!disk.contains(SECRET));
+        assert!(!disk.contains("apiKeyRaw"));
+        assert!(!disk.contains("runpodApiKey"));
+        assert!(disk.contains("encryptedCredentials"));
+        assert!(disk.contains("fixture-Endpoint_123"));
+        drop(manager);
+        let reloaded = ProviderManager::new(&profile.path().to_path_buf());
+        let state = reloaded.state.read();
+        let entry = state.providers.iter().find(|p|p.id=="runpod-ollama").unwrap();
+        assert!(entry.configured);
+        assert_eq!(entry.endpoint_id, "fixture-Endpoint_123");
+        assert_eq!(entry.selected_model, "qwen2.5-coder:7b");
+        assert_eq!(entry.api_key_raw, SECRET);
+        drop(state);
+        // The frontend always sends a blank password when preserving a stored key.
+        let result = reloaded.save_provider(&json!({"providerId":"runpod-ollama","apiKey":"","selectedModel":"custom/model:latest"}));
+        assert!(result.get("error").is_none());
+        assert!(!result.to_string().contains(SECRET));
+        assert_eq!(reloaded.state.read().providers.iter().find(|p|p.id=="runpod-ollama").unwrap().api_key_raw, SECRET);
+    }
+
+    #[test]
+    fn short_keys_and_historical_masks_never_expose_runpod_credentials() {
+        for secret in ["!", "9s3cr3t!X", "9s3cr3t!XY"] {
+            let profile = tempfile::tempdir().unwrap();
+            let manager = ProviderManager::new(&profile.path().to_path_buf());
+            let mut body=valid(); body["apiKey"]=json!(secret);
+            let public=manager.save_provider(&body);
+            assert!(public.get("error").is_none());
+            assert!(!public.to_string().contains(secret));
+            assert_eq!(ProviderManager::mask_secret(secret), "••••••••");
+            let entry=manager.state.read().providers.iter().find(|p|p.id=="runpod-ollama").unwrap().clone();
+            assert!(!format!("{entry:?}").contains(secret));
+            let merged=ProviderManager::merge_saved_state(ProviderManager::default_catalog(), &json!({"providers":[{
+                "id":"runpod-ollama","endpointId":"fixture","selectedModel":"fixture-model",
+                "configured":true,"apiKeyRaw":secret,"apiKeyMasked":secret
+            }]})).unwrap();
+            let entry=merged.providers.iter().find(|p|p.id=="runpod-ollama").unwrap();
+            assert_eq!(entry.api_key_masked,"••••••••");
+            assert!(!serde_json::to_value(entry).unwrap().to_string().contains(secret));
+        }
+    }
+
+    #[test]
+    fn invalid_drafts_and_updates_do_not_mutate_or_write_existing_configuration() {
+        let profile = tempfile::tempdir().unwrap();
+        let manager = ProviderManager::new(&profile.path().to_path_buf());
+        for required in ["endpointId", "apiKey", "selectedModel"] {
+            let mut body = valid(); body.as_object_mut().unwrap().remove(required);
+            let before = fs::read(&manager.config_path).unwrap();
+            assert!(manager.save_provider(&body)["error"].is_string());
+            assert_eq!(fs::read(&manager.config_path).unwrap(), before);
+        }
+        assert!(manager.save_provider(&valid()).get("error").is_none());
+        let before = fs::read(&manager.config_path).unwrap();
+        let state_before = manager.get_public_state();
+        for (field, value) in [("endpointId", "".to_string()), ("endpointId", "../escape".into()),
+            ("endpointId", "https://arbitrary.invalid".into()), ("endpointId", "id?query".into()),
+            ("endpointId", "id%2fescape".into()), ("endpointId", "á".into()),
+            ("endpointId", " id ".into()), ("endpointId", "a".repeat(129)),
+            ("apiKey", "key\r\nheader".into()), ("apiKey", "key with space".into()),
+            ("selectedModel", "  ".into()), ("selectedModel", "model\n".into())]
+        {
+            let mut body = valid(); body[field] = json!(value);
+            let result = manager.save_provider(&body);
+            assert!(result["error"].is_string()); assert!(!result.to_string().contains(SECRET));
+            assert_eq!(fs::read(&manager.config_path).unwrap(), before);
+            assert_eq!(manager.get_public_state(), state_before);
+        }
+        for field in ["endpointId", "apiKey", "selectedModel"] {
+            let mut body=valid(); body[field]=Value::Null;
+            assert!(manager.save_provider(&body)["error"].is_string());
+            assert_eq!(fs::read(&manager.config_path).unwrap(), before);
+        }
+    }
+
+    #[test]
+    fn failed_persistence_keeps_old_in_memory_and_disk_state() {
+        let profile = tempfile::tempdir().unwrap();
+        let manager = ProviderManager::new(&profile.path().to_path_buf());
+        assert!(manager.save_provider(&valid()).get("error").is_none());
+        let before = manager.state.read().clone();
+        // Force an encryption failure without reading/changing any existing user's credentials.
+        let key = profile.path().join("test-credentials.key");
+        let original_key = fs::read(&key).unwrap();
+        fs::write(&key, b"invalid fixture key").unwrap();
+        let disk_before = fs::read(&manager.config_path).unwrap();
+        let mut body = valid(); body["endpointId"] = json!("new-endpoint"); body["apiKey"] = json!("replacement-key");
+        let result = manager.save_provider(&body);
+        assert!(result["error"].is_string()); assert!(!result.to_string().contains("replacement-key"));
+        assert_eq!(serde_json::to_value(&*manager.state.read()).unwrap(), serde_json::to_value(before).unwrap());
+        assert_eq!(fs::read(&manager.config_path).unwrap(), disk_before);
+        fs::write(key, original_key).unwrap();
+    }
+
+    #[test]
+    fn saved_url_format_and_stale_configured_flags_cannot_enable_unvalidated_runpod() {
+        let saved = json!({"providers":[{"id":"runpod-ollama","configured":true,
+            "baseUrl":"https://arbitrary.invalid", "apiFormat":"openai", "apiKeyRaw":SECRET,
+            "selectedModel":"qwen2.5-coder:7b"}]});
+        let merged = ProviderManager::merge_saved_state(ProviderManager::default_catalog(), &saved).unwrap();
+        let entry = merged.providers.iter().find(|p|p.id=="runpod-ollama").unwrap();
+        assert!(!entry.configured); assert!(entry.endpoint_id.is_empty());
+        assert_eq!(entry.base_url, provider_tool_runpod::API_BASE);
+        assert_eq!(entry.api_format, "runpod");
+        assert!(!ProviderManager::supports_subagent_tools(entry));
+        // endpointId is optional for old serialized entries, required only for RunPod admission.
+        let mut serialized = serde_json::to_value(entry).unwrap();
+        serialized.as_object_mut().unwrap().remove("endpointId");
+        for field in ["apiKeyRaw","oauthAccessToken","oauthRefreshToken"] {
+            serialized[field] = json!("");
+        }
+        assert!(serde_json::from_value::<ProviderEntry>(serialized).unwrap().endpoint_id.is_empty());
+        let ranks: Vec<_> = merged.providers.iter().filter(|p|p.id!="runpod-ollama").map(|p|(p.id.as_str(),p.priority_rank)).collect();
+        assert_eq!(ranks[0], ("openrouter",1)); assert_eq!(ranks[1], ("custom",2));
+        assert_eq!(ranks[2], ("openai",3)); assert_eq!(ranks[3], ("xai",4));
+    }
+
+    #[test]
+    fn shared_model_id_keeps_active_provider_and_explicit_override() {
+        let profile = tempfile::tempdir().unwrap();
+        let manager = ProviderManager::new(&profile.path().to_path_buf());
+        assert!(manager.save_provider(&valid()).get("error").is_none());
+        let model = "qwen2.5-coder:7b";
+        {
+            let mut state = manager.state.write();
+            let local = state.providers.iter_mut().find(|p| p.id == "ollama").unwrap();
+            local.configured = true;
+            local.selected_model = model.into();
+            local.models = vec![ProviderManager::model(model, model, 32768, false, false)];
+            state.active_provider = "ollama".into();
+            state.active_model = model.into();
+        }
+        assert_eq!(manager.select_model(model), model);
+        {
+            let state = manager.state.read();
+            assert_eq!(state.active_provider, "ollama");
+            assert_eq!(ProviderManager::provider_for_model(&state, model, None).unwrap().id, "ollama");
+            assert_eq!(ProviderManager::provider_for_model(&state, model, Some("runpod-ollama")).unwrap().id, "runpod-ollama");
+            assert!(ProviderManager::provider_for_model(&state, model, Some("missing")).is_none());
+        }
+        assert!(manager.mcp_tool_budget(model).enabled);
+        manager.state.write().active_provider = "runpod-ollama".into();
+        assert_eq!(manager.select_model(model), model);
+        assert_eq!(manager.state.read().active_provider, "runpod-ollama");
+        assert!(!manager.mcp_tool_budget(model).enabled);
+    }
+
+    #[test]
+    fn paused_manager_returns_non_retriable_stream_error_with_no_tools() {
+        let profile = tempfile::tempdir().unwrap();
+        let manager = ProviderManager::new(&profile.path().to_path_buf());
+        assert!(manager.save_provider(&valid()).get("error").is_none());
+        manager.ai_control.pause();
+        let mut chunks = Vec::new();
+        let turn = manager.complete_turn_with_tools(&[json!({"role":"user","content":"hi"})],
+            &json!([{"type":"function","function":{"name":"Bash","parameters":{}}}]),
+            None, |chunk| chunks.push(chunk)).unwrap();
+        assert!(turn.stream_error.unwrap().contains("cancelled"));
+        assert!(turn.tool_calls.is_empty()); assert!(chunks.is_empty());
+        assert_eq!(manager.test_provider(&json!({"providerId":"runpod-ollama"}))["ok"], false);
+    }
 }
 
 #[cfg(test)] mod credential_persistence_tests {

@@ -12,6 +12,7 @@
     artifacts: [],
     schedules: [],
     providers: null,
+    agentState: null,
     draft: "",
     attachments: [],
     folder: "",
@@ -192,6 +193,7 @@
     state.attachmentDrafts.set(key,state.attachments.slice());
     state.drafts.set(key,input.value);
     sessionStorage.setItem("quixi.draft."+key,input.value);
+    updateAgentSendControls();
   }
   function getDraft() {
     return (
@@ -348,6 +350,104 @@
     state.providers = await api("/api/quixi/providers");
     if (state.providers.credentialStorageError) toast("Credentials could not be saved or unlocked: " + state.providers.credentialStorageError, true);
   }
+  // These controls only query the local engine. They never ping or warm a provider.
+  let agentPollTimer = null, agentStateRevision = 0, agentStatePending = false;
+  let agentRefreshPending = false, agentPolling = false;
+  const agentStatusLabels = {
+    available: "IA disponível",
+    processing: "IA processando",
+    paused: "IA pausada",
+    cancelling: "Cancelando",
+    cancel_error: "Erro ao cancelar",
+  };
+  function isolatedAgentCommand(text, attachments = state.attachments) {
+    if (attachments.length) return null;
+    const command = text.trim().replace(/[a-z]/g, char => char.toUpperCase());
+    return command === "FINAL" ? true : command === "INICIAR" ? false : null;
+  }
+  function agentSendBlocked() {
+    // INICIAR admits new work even while irreversible old cancellations settle.
+    // Storage failures are fail-closed by the backend's authoritative paused flag.
+    return Boolean(state.agentState?.paused);
+  }
+  function applyAgentState(value) {
+    if (!value || typeof value.paused !== "boolean" || !agentStatusLabels[value.status]) return;
+    state.agentState = { paused: value.paused, status: value.status, message: value.message };
+    updateAgentControls();
+  }
+  function updateAgentControls() {
+    const status = document.getElementById("agent-status");
+    if (status) {
+      status.textContent = agentStatusLabels[state.agentState?.status] || "Consultando IA…";
+      status.dataset.status = state.agentState?.status || "unknown";
+      status.title = state.agentState?.message || "Estado global da IA neste aplicativo";
+    }
+    const toggle = document.getElementById("agent-toggle");
+    if (toggle) {
+      toggle.textContent = state.agentState?.paused ? "Retomar IA" : "Pausar IA";
+      toggle.disabled = !state.agentState || agentStatePending;
+      toggle.setAttribute("aria-pressed", String(Boolean(state.agentState?.paused)));
+    }
+    updateAgentSendControls();
+  }
+  function updateAgentSendControls() {
+    const input = document.getElementById("prompt");
+    if (!input) return;
+    const blocked = agentSendBlocked();
+    const command = isolatedAgentCommand(input.value);
+    const busy = pendingSubmissions.has(draftKey());
+    const send = document.getElementById("send-button");
+    if (send) send.disabled = busy || (command !== null ? agentStatePending : blocked);
+    const steer = document.getElementById("steer-button");
+    if (steer) steer.disabled = busy || blocked;
+    for (const control of document.querySelectorAll("[data-pending-send]")) control.disabled = Boolean(blocked);
+    const note = document.getElementById("composer-note");
+    if (note) note.textContent = blocked
+      ? "IA pausada · Retome a IA ou envie INICIAR isoladamente. FINAL também está disponível."
+      : running(session()) ? "Enter to queue · Shift+Enter for a new line" : "Enter to send · Shift+Enter for a new line";
+  }
+  async function refreshAgentState() {
+    if (agentRefreshPending || agentStatePending) return;
+    agentRefreshPending = true;
+    const revision = agentStateRevision;
+    try {
+      const value = await rpc("Providers", "getAgentState");
+      if (revision === agentStateRevision) applyAgentState(value);
+    } catch (_) { /* A transient local IPC failure does not invent a new state. */ }
+    finally { agentRefreshPending = false; }
+  }
+  async function changeAgentState(paused) {
+    if (agentStatePending) return false;
+    agentStatePending = true;
+    ++agentStateRevision; // Ignore an older poll completing after a user command.
+    updateAgentControls();
+    try {
+      const value = await rpc("Providers", "setAgentState", [{ paused }]);
+      if (value?.error) throw new Error(value.error);
+      if (!value || typeof value.paused !== "boolean" || !agentStatusLabels[value.status])
+        throw new Error("Não foi possível confirmar o estado da IA.");
+      applyAgentState(value);
+      // Do not clear streams or mark tasks stopped locally: the engine owns cancellation.
+      return true;
+    } finally {
+      agentStatePending = false;
+      updateAgentControls();
+    }
+  }
+  function scheduleAgentPoll() {
+    clearTimeout(agentPollTimer);
+    if (!agentPolling || document.hidden) return;
+    agentPollTimer = setTimeout(async () => {
+      await refreshAgentState();
+      scheduleAgentPoll();
+    }, 4000);
+  }
+  document.addEventListener("visibilitychange", () => {
+    if (!document.hidden && agentPolling) void refreshAgentState();
+    scheduleAgentPoll();
+  });
+  addEventListener("pagehide", () => { agentPolling = false; clearTimeout(agentPollTimer); });
+  addEventListener("pageshow", () => { agentPolling = true; void refreshAgentState(); scheduleAgentPoll(); });
   function navigate(page, id = null, { replace = false } = {}) {
     saveDraft();
     capabilityUI?.stopAudio();
@@ -501,6 +601,15 @@
       { class: "topbar" },
       ib("Back", "back", () => history.back()),
       el("div", { class: "crumb" }, el("strong", {}, crumb)),
+      el("div", { class: "agent-controls", "aria-label": "Controles globais da IA" },
+        el("span", { id: "agent-status", role: "status", "aria-live": "polite" },
+          agentStatusLabels[state.agentState?.status] || "Consultando IA…"),
+        el("button", { type: "button", id: "agent-toggle", class: "quiet",
+          disabled: !state.agentState || agentStatePending,
+          onClick: async () => {
+            try { await changeAgentState(!state.agentState.paused); }
+            catch (error) { toast(error.message, true); }
+          } }, state.agentState?.paused ? "Retomar IA" : "Pausar IA")),
       button(
         `Providers${state.providers?.configuredCount ? " · " + state.providers.configuredCount : ""}`,
         () => providerDirectory(),
@@ -594,6 +703,7 @@
       settings: settingsPage,
     };
     handlers[state.page]?.(host);
+    updateAgentControls();
     if (state.browser) renderBrowser(host);
   }
   let conversationFind = null;
@@ -1038,6 +1148,7 @@
         ),
       ),
     );
+    updateAgentSendControls();
   }
   async function folderDialog() {
     const anchor=document.querySelector(".workspace-switch")?.getBoundingClientRect();
@@ -1113,6 +1224,20 @@
     if (!input) return;
     let text = input.value.trim();
     if (!text && !state.attachments.length) return;
+    const agentCommand = isolatedAgentCommand(text);
+    if (agentCommand !== null) {
+      try {
+        if (await changeAgentState(agentCommand) && input.isConnected && input.value.trim() === text) {
+          input.value = "";
+          saveDraft();
+        }
+      } catch (error) { toast(error.message, true); }
+      return;
+    }
+    if (agentSendBlocked()) {
+      toast("IA pausada. Retome a IA antes de enviar uma tarefa.", true);
+      return;
+    }
     // Handle local slash commands (`/compact`, `/plan`, `/goal`, `/team`, `/model`) before provider dispatch.
     if (text.startsWith("/") && !state.attachments.length) {
       const [cmd, ...restTokens] = text.split(/\s+/);
@@ -1239,6 +1364,7 @@
       const uuid = crypto.randomUUID();
       const wasRunning = running(s);
       const accepted = await rpc(service(s), "sendMessageV2", [s.sessionId, {text, attachments, messageUuid:uuid, delivery}]);
+      void refreshAgentState();
       if (accepted?.error) throw new Error(accepted.error);
       if (accepted?.queued) toast(delivery === "steer" ? "Steering sent — applies at the next safe boundary." : "Follow-up queued.");
       const stillHere=document.getElementById("prompt") && draftKey()===originKey;
@@ -1258,6 +1384,7 @@
       pendingSubmissions.delete(originKey);input.disabled=false;
       if(draftKey()===originKey){const current=document.getElementById("prompt");if(current)current.disabled=false;const file=document.getElementById("attachment-input");if(file)file.disabled=false;}
       if (b) b.disabled = false;
+      updateAgentSendControls();
     }
   }
   async function forkMessage(s,message,text) {
@@ -1284,6 +1411,10 @@
   function pendingMessageRows(s) {
     return (state.pendingMessages.get(s?.sessionId) || []).map(m => {
       const act = async (method, control) => {
+        if (method === "guidePendingMessage" && agentSendBlocked()) {
+          toast("Retome a IA antes de enviar uma mensagem pendente.", true);
+          return;
+        }
         control.disabled = true;
         try {
           const result = await rpc(service(s), method, [s.sessionId, m.messageUuid]);
@@ -1296,6 +1427,8 @@
       };
       const remove = button("Remove", () => act("cancelPendingMessage", remove), "quiet");
       const guide = button(running(s) ? "Guide task" : "Send now", () => act("guidePendingMessage", guide), "quiet");
+      guide.disabled = Boolean(agentSendBlocked());
+      guide.dataset.pendingSend = "true";
       guide.title = running(s) ? "Apply at the next safe boundary; running tools finish first." : "Send this held message; other held messages stay on hold.";
       return el("div", {class:"pending-message"},
         el("div", {class:"pending-message-content"},
@@ -1339,6 +1472,7 @@
     }
     const input = document.getElementById("prompt");
     if (input) input.placeholder = active ? "Add a follow-up…" : "Write your prompt to QuixiDesk";
+    updateAgentSendControls();
   }
   async function refreshSession(id) {
     let old = state.sessions.find((s) => s.sessionId === id);
@@ -3730,7 +3864,9 @@
                 el(
                   "p",
                   {},
-                  p.category === "local"
+                  isRunpodProvider(p)
+                    ? "Serverless com fila e cold start. Testar conexão verifica health, não inferência."
+                    : p.category === "local"
                     ? "Connect to a model service on your computer."
                     : p.id === "custom"
                       ? "Use your own compatible model endpoint."
@@ -3781,7 +3917,66 @@
     draw();
     dialog("Model providers", body, { wide: true });
   }
+  const runpodNote = "RunPod Serverless usa fila (queue-based) e pode ter cold start. A resposta chega completa; streaming e ferramentas (tools) não estão comprovados. Testar conexão consulta somente /health: health não comprova inferência e não inicia uma tarefa de GPU.";
+  function isRunpodProvider(p) {
+    return p.id === "runpod-ollama" || p.apiFormat === "runpod";
+  }
+  async function runpodProviderEditor(p, changed) {
+    const endpoint = el("input", { type: "text", name: "endpointId", value: p.endpointId || "",
+      required: true, autocomplete: "off", spellcheck: "false", "aria-label": "Endpoint ID" });
+    // The engine exposes a mask, never a recoverable credential. A blank draft keeps it.
+    const key = el("input", { type: "password", name: "apiKey", value: "", autocomplete: "new-password",
+      "aria-label": "API key", placeholder: p.apiKeyMasked
+        ? p.apiKeyMasked + " · Deixe em branco para manter a chave salva"
+        : "API key do RunPod" });
+    const model = el("input", { type: "text", name: "selectedModel", value: p.selectedModel || "qwen2.5-coder:7b",
+      required: true, autocomplete: "off", spellcheck: "false", "aria-label": "Model ID" });
+    const status = el("div", { class: "form-error", role: "status", "aria-live": "polite" });
+    const safeMessage = message => key.value ? String(message).split(key.value).join("[credential redacted]") : String(message);
+    const payload = () => {
+      if (!endpoint.value.trim()) throw new Error("Informe o Endpoint ID do RunPod.");
+      if (!model.value.trim()) throw new Error("Informe o Model ID do worker.");
+      return { providerId: p.id, endpointId: endpoint.value.trim(), apiKey: key.value, selectedModel: model.value.trim() };
+    };
+    let busy = false;
+    const test = button("Testar conexão", async () => {
+      if (busy) return;
+      busy = true; test.disabled = save.disabled = true;
+      try {
+        const config = payload();
+        status.textContent = "Verificando configuração e /health (sem inferência)…";
+        const result = await rpc("Providers", "testProvider", [config]);
+        status.textContent = safeMessage(result?.message || result?.error || (result?.ok ? "Health disponível; inferência não testada." : "Não foi possível verificar a conexão."));
+      } catch (error) { status.textContent = safeMessage(error.message); }
+      finally { busy = false; test.disabled = save.disabled = false; }
+    }, "quiet");
+    const save = button("Save & use provider", async () => {
+      if (busy) return;
+      busy = true; test.disabled = save.disabled = true;
+      try {
+        const config = payload();
+        status.textContent = "Salvando configuração (sem inferência)…";
+        const result = await rpc("Providers", "saveProvider", [{ ...config, setAsActive: true }]);
+        if (!result || result.error) throw new Error(result?.error || "Não foi possível confirmar o salvamento.");
+        await loadProviders();
+        await changed?.();
+        d.close();
+        toast("RunPod salvo. Testar conexão verifica apenas /health, não inferência.");
+      } catch (error) { status.textContent = safeMessage(error.message); }
+      finally { busy = false; test.disabled = save.disabled = false; }
+    }, "primary");
+    const d = dialog(p.name, [
+      el("p", { class: "hint runpod-note" }, runpodNote),
+      field("Endpoint ID", endpoint, "ID do endpoint Serverless, não uma URL."),
+      field("API key", key, "Deixe em branco para manter a chave salva. Nunca cole uma chave na conversa."),
+      field("Model ID", model, "Nome exato do modelo instalado no worker. Não há descoberta automática de modelos."),
+      status,
+      el("div", { class: "form-actions" }, button("Cancel", () => d.close(), "quiet"), test, save),
+    ]);
+    d.addEventListener("close", () => { key.value = ""; });
+  }
   async function providerEditor(p, changed) {
+    if (isRunpodProvider(p)) return runpodProviderEditor(p, changed);
     const error = el("div", { class: "form-error", role: "alert" });
     const key = el("input", {
       type: "password",
@@ -3988,6 +4183,7 @@
     });
     const catalogStatus = el("p", { class: "hint", role: "status" });
     const refresh = button("Refresh models", async () => {
+      if (isRunpodProvider(providers.find(p => p.id === selected) || providers[0])) return;
       refresh.disabled = true;
       catalogStatus.textContent = "Loading models…";
       try {
@@ -3999,6 +4195,7 @@
       } catch (e) { catalogStatus.textContent = e.message; }
       finally { refresh.disabled = false; }
     }, "quiet");
+    refresh.classList.add("model-catalog-refresh");
     const anchor=document.querySelector(".model-picker-trigger")?.getBoundingClientRect();
     const d = dialog("Choose model", [
       field("Provider", ps),
@@ -4011,6 +4208,9 @@
     positionPopover(d, anchor);
     function draw() {
       const p = providers.find((x) => x.id === selected) || providers[0];
+      const runpod = isRunpodProvider(p);
+      refresh.hidden = runpod;
+      query.hidden = runpod;
       models.replaceChildren(
         ...[...(p.models || [])]
           .filter((m) => `${m.id} ${m.label || ""}`.toLowerCase().includes(query.value.trim().toLowerCase()))
@@ -4039,11 +4239,10 @@
                 m.id === p.selectedModel ? icon("check", 14) : null,
               ],
               async () => {
-                const r = await api("/api/quixi/providers/save", {
-                  providerId: p.id,
-                  selectedModel: m.id,
-                  setAsActive: true,
-                });
+                const config = { providerId: p.id, selectedModel: m.id, setAsActive: true };
+                const r = isRunpodProvider(p)
+                  ? await rpc("Providers", "saveProvider", [config])
+                  : await api("/api/quixi/providers/save", config);
                 if (r.error) throw new Error(r.error);
                 if (session())
                   await rpc(service(session()), "setModel", [state.id, m.id]);
@@ -4057,10 +4256,13 @@
           ),
       );
       if (!models.childElementCount)
-        models.append(el("p", { class: "hint" }, query.value.trim()
-          ? "No matching models. Try another search."
+        models.append(el("p", { class: "hint" }, runpod
+          ? "Configure o Model ID instalado no worker RunPod."
+          : query.value.trim() ? "No matching models. Try another search."
           : "No models loaded yet. Refresh the catalog or add an unadvertised model below."));
       additions.replaceChildren();
+      if (runpod) additions.append(el("p", { class: "hint runpod-note" }, runpodNote),
+        button("Configure RunPod", () => { d.close(); providerEditor(p, () => renderPage()); }, "quiet"));
       if (["custom", "openrouter"].includes(p.id)) {
         const input = el("input", {
           placeholder: "e.g. organization/model-name",
@@ -4434,6 +4636,11 @@
     });
   }
   addEventListener("quixi:event", ({ detail: { channel, payload } }) => {
+    if (channel === "quixi:agent-state" || channel === "quixi.web.Providers") {
+      ++agentStateRevision;
+      applyAgentState(payload);
+      return;
+    }
     if (channel === "quixi:open-tools") { navigate("tools"); return; }
     if (channel === "quixi:mcp-interaction") { pollMcpInteractions(); return; }
     if (channel === "quixi:mcp-updated") {
@@ -4461,6 +4668,7 @@
       return;
     const id = payload.sessionId;
     if (!id) return;
+    if (payload.type === "close" || payload.type === "error") void refreshAgentState();
     if (payload.type === "session_collab_updated" && payload.collab) {
       state.collab.set(id, payload.collab);
       if (state.id === id && state.page === "chat") {
@@ -4521,7 +4729,9 @@
         ? "windows"
         : "linux";
     try {
-      await Promise.all([loadSessions(), loadProjects(), loadProviders()]);
+      await Promise.all([loadSessions(), loadProjects(), loadProviders(), refreshAgentState()]);
+      agentPolling = true;
+      scheduleAgentPoll();
       state.folder = ""; // A new conversation has no implicit access to the source checkout.
       const path = decodeURIComponent(location.pathname.slice(1));
       navigate(path || "new", null, { replace: true });
@@ -4562,6 +4772,7 @@
   );
   // Refresh persisted state after returning from a background native window.
   addEventListener("focus", () => {
+    if (agentPolling) void refreshAgentState();
     if (state.sessions.length)
       loadSessions()
         .then(() => {

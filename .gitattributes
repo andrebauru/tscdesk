@@ -1,0 +1,6 @@
+# Linux entry points must remain executable by Bash after a Windows checkout.
+*.sh text eol=lf
+Makefile text eol=lf
+
+# Vendored artifact libraries and licenses have checksums recorded in PROVENANCE.json.
+resources/artifact-libs/** text eol=lf

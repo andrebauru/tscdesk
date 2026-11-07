@@ -208,6 +208,12 @@ impl QuixiEngine {
         parent_history: &[Value],
         cancelled: &AtomicBool,
     ) -> (String, bool) {
+        let ai_request = match self.provider_manager.ai_control.start_request() {
+            Ok(request) => request,
+            Err(message) => return (message, true),
+        };
+        let _request_scope = ai_request.enter();
+        let stopped = || self.ai_stopped(cancelled) || ai_request.cancelled();
         let title = input["title"].as_str().unwrap_or("").trim();
         let prompt = input["prompt"].as_str().unwrap_or("").trim();
         if title.is_empty()
@@ -238,7 +244,7 @@ impl QuixiEngine {
         {
             return ("Task requires a title (1–160 bytes), prompt (1–16000 bytes), optional boolean allow_edits/fork_context/worktree, optional string model, and optional resume_agent_id.".into(),true);
         }
-        if cancelled.load(Ordering::SeqCst) {
+        if stopped() {
             return ("Task stopped before delegation.".into(), true);
         }
         let edits = input["allow_edits"].as_bool().unwrap_or(false);
@@ -275,6 +281,7 @@ impl QuixiEngine {
             self.provider_manager.subagent_selection(parent_model)
         };
 
+        if stopped() { return ("Task stopped before delegation.".into(), true); }
         let mut child_cwd = cwd.to_string();
         let mut worktree_meta: Option<Value> = None;
         if use_worktree && !cwd.trim().is_empty() {
@@ -339,7 +346,7 @@ impl QuixiEngine {
         let mut cache = agent_tools::ToolResults::default();
         let outcome = (|| -> Result<String, String> {
             for round in 0..MAX_CHILD_ROUNDS {
-                if cancelled.load(Ordering::SeqCst) {
+                if stopped() {
                     return Err("Stopped with parent task.".into());
                 }
                 let current_mode = self.current_permission_mode(session, mode);
@@ -350,6 +357,7 @@ impl QuixiEngine {
                 // Use the selected model's context window and compact older evidence.
                 // Full activity remains stored in the child record for parent recovery.
                 self.compact_context_for_provider(&mut messages, &model, provider.as_deref(), prompt, cancelled)?;
+                if stopped() { return Err("Stopped with parent task.".into()); }
                 let turn = self
                     .provider_manager
                     .complete_turn_with_tools_for_provider(
@@ -360,7 +368,7 @@ impl QuixiEngine {
                         &mut |_| {},
                     )
                     .ok_or("The selected provider did not return a tool-capable response.")?;
-                if cancelled.load(Ordering::SeqCst) {
+                if stopped() {
                     return Err("Stopped with parent task.".into());
                 }
                 if let Some(error) = turn.stream_error {
@@ -402,7 +410,7 @@ impl QuixiEngine {
                 }
                 messages.push(message);
                 for call in turn.tool_calls {
-                    if cancelled.load(Ordering::SeqCst) {
+                    if stopped() {
                         return Err("Stopped with parent task.".into());
                     }
                     let call_id = format!("{id}:{}", call.id);
@@ -431,6 +439,7 @@ impl QuixiEngine {
                         ),
                         Err(e) => (format!("Invalid tool arguments: {e}"), true),
                     };
+                    if stopped() { return Err("Stopped with parent task; late tool result suppressed.".into()); }
                     record["toolCalls"] = json!(record["toolCalls"].as_u64().unwrap_or(0) + 1);
                     if result.1 {
                         record["failedToolCalls"] =
@@ -446,7 +455,7 @@ impl QuixiEngine {
             }
             Err("Subagent reached its 12-round limit. Review its recorded activity; completion was not established.".into())
         })();
-        let stopped = cancelled.load(Ordering::SeqCst);
+        let stopped = stopped();
         record["status"] = json!(if stopped {
             "cancelled"
         } else if outcome.is_ok() {

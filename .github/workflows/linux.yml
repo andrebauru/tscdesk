@@ -1,0 +1,51 @@
+name: Linux compatibility
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  scripts-and-ui:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - name: Installer and launcher fixtures (no packages installed)
+        run: python3 -m unittest discover -s tests/install -v
+      - name: Bash syntax
+        run: bash -n iniciar-chromeos.sh scripts/install-linux.sh scripts/launch-linux.sh
+      - name: UI regressions
+        run: |
+          npm ci --prefix tests/ui
+          node --test tests/ui/*.test.cjs
+      - name: Redistributed asset integrity
+        run: python3 scripts/audit-product-assets.py
+
+  rust-linux:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    env:
+      CARGO_BUILD_JOBS: 2
+      QUIXI_TEST_PROFILE: ${{ runner.temp }}/tscdesk-linux-profile
+    steps:
+      - uses: actions/checkout@v4
+      - name: GTK and WebKitGTK dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install --no-install-recommends -y build-essential pkg-config libgtk-3-dev libwebkit2gtk-4.1-dev perl
+      - name: Stable Rust (does not change the default toolchain)
+        run: rustup toolchain install stable --profile minimal
+      - name: Check all Linux targets
+        run: cargo +stable check --locked --workspace --all-targets
+      - name: Linux system information regressions
+        run: cargo +stable test --locked -p quixi-ipc linux_info_tests -- --test-threads=1
+      - name: Desktop result regressions (no input injection)
+        run: |
+          cargo +stable test --locked -p quixi-platform --lib tests::linux_screenshot_result_preserves_backend_failure -- --exact
+          cargo +stable test --locked -p quixi-platform --lib tests::linux_picker_preserves_cancellation_and_headless_default -- --exact
+          cargo +stable test --locked -p quixi-platform --lib tests::clipboard_record_updates_only_cache -- --exact

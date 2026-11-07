@@ -1,29 +1,33 @@
-# QuixiDesk — native Rust desktop workspace (tao + wry / WKWebView)
+# TSCDesk — native Rust desktop workspace (tao + wry / system webview)
 #
 #   make            # release build of the whole workspace
 #   make app        # build + package dist/QuixiDesk.app
 #   make run        # run the desktop app straight from cargo
 #   make test       # cargo test --workspace
-#   make install    # copy dist/QuixiDesk.app to /Applications
+#   make install    # copy dist/QuixiDesk.app to /Applications (macOS)
+#   make install-linux # user installation on Linux / ChromeOS Crostini
 #
 SHELL := /bin/bash
 ROOT  := $(shell cd "$(dir $(lastword $(MAKEFILE_LIST)))" && pwd)
 CARGO := $(shell command -v cargo 2>/dev/null || echo $(HOME)/.cargo/bin/cargo)
 APP   := $(ROOT)/dist/QuixiDesk.app
 
-.PHONY: all app run test check fmt clippy clean install uninstall open
+.PHONY: all app run test check fmt clippy clean install install-linux uninstall open
 
 all:
-	$(CARGO) build --release --workspace
+	$(CARGO) build --locked --release --workspace
+
+install-linux:
+	bash ./scripts/install-linux.sh $(INSTALL_ARGS)
 
 app:
 	./scripts/package-macos-app.sh release
 
 run:
-	$(CARGO) run --release -p quixi-app
+	$(CARGO) run --locked --release -p quixi-app
 
 test:
-	$(CARGO) test --workspace
+	$(CARGO) test --locked --workspace
 
 check:
 	$(CARGO) check --workspace --all-targets

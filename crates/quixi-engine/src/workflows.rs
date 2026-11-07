@@ -351,7 +351,7 @@ impl QuixiEngine {
         let mut history_summaries = Vec::new();
 
         for round in 1..=max_rounds {
-            if cancelled.load(Ordering::SeqCst) {
+            if self.ai_stopped(cancelled) {
                 return ("Ralph loop stopped.".into(), true);
             }
             let handoff_section = match &prior_handoff {
@@ -488,7 +488,7 @@ impl QuixiEngine {
         let mut phase_outputs: Vec<Value> = Vec::with_capacity(phases.len());
 
         for (p_idx, phase) in phases.iter().enumerate() {
-            if cancelled.load(Ordering::SeqCst) {
+            if self.ai_stopped(cancelled) {
                 return ("Workflow cancelled.".into(), true);
             }
             let p_title = phase["title"].as_str().unwrap_or("Phase").trim();
@@ -569,7 +569,7 @@ impl QuixiEngine {
             } else {
                 let mut seq_out = Vec::with_capacity(steps.len());
                 for (s_idx, step) in steps.iter().enumerate() {
-                    if cancelled.load(Ordering::SeqCst) {
+                    if self.ai_stopped(cancelled) {
                         return ("Workflow cancelled.".into(), true);
                     }
                     let label = step["label"].as_str().unwrap_or("step");

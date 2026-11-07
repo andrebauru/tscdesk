@@ -562,12 +562,19 @@ impl ComputerUse {
         serde_json::from_slice(&bytes).ok()
     }
 
-    /// Captures the OS desktop first (rather than QuixiDesk's own WebView), falling back
-    /// to the WebView bridge only in headless environments without screen capture access.
+    #[cfg(target_os = "linux")]
+    fn linux_screenshot_base64(capture: Result<Vec<u8>>) -> Result<String> {
+        capture
+            .context("Linux/Crostini screenshot unavailable: allow screen capture in your desktop/portal and check that a supported capture backend is available; Crostini may not expose the ChromeOS desktop")
+            .map(|bytes| base64::engine::general_purpose::STANDARD.encode(&bytes))
+    }
+
+    /// Captures the OS desktop first (rather than QuixiDesk's own WebView).
+    /// Linux propagates backend errors; other platforms retain the WebView/headless fallback.
     pub fn capture_desktop_screenshot_base64() -> Result<String> {
         #[cfg(target_os = "linux")]
-        if let Ok(bytes) = crate::linux::screenshot_png() {
-            return Ok(base64::engine::general_purpose::STANDARD.encode(&bytes));
+        {
+            Self::linux_screenshot_base64(crate::linux::screenshot_png())
         }
         #[cfg(target_os = "macos")]
         {
@@ -592,57 +599,63 @@ impl ComputerUse {
                 }
             }
         }
-        Self::capture_screenshot_base64()
+        #[cfg(not(target_os = "linux"))]
+        {
+            Self::capture_screenshot_base64()
+        }
     }
 
-    /// Captures a screenshot as a base64 PNG string using the live QuixiDesk WKWebView bridge or OS-native screen capture.
+    /// Captures a base64 PNG using the Linux backend, or the existing bridge/OS fallbacks elsewhere.
     pub fn capture_screenshot_base64() -> Result<String> {
         #[cfg(target_os = "linux")]
-        if let Ok(bytes) = crate::linux::screenshot_png() {
-            return Ok(base64::engine::general_purpose::STANDARD.encode(&bytes));
-        }
-        if let Some(png_bytes) = Self::fetch_quixi_bridge_bytes("GET", "/screenshot", None) {
-            if png_bytes.starts_with(b"\x89PNG") {
-                return Ok(base64::engine::general_purpose::STANDARD.encode(&png_bytes));
-            }
-        }
-        #[cfg(target_os = "macos")]
         {
-            let tmp = std::env::temp_dir().join(format!("quixi-screen-{}.png", std::process::id()));
-            if !Self::is_headless_test_env() && unsafe { CGPreflightScreenCaptureAccess() } {
-                let status = Command::new("/usr/sbin/screencapture")
-                    .args(["-x", "-t", "png"])
-                    .arg(&tmp)
-                    .status();
-                if let Ok(st) = status {
-                    if st.success() && tmp.exists() {
-                        let bytes = fs::read(&tmp)?;
-                        let _ = fs::remove_file(&tmp);
-                        if bytes.len() > 100 {
-                            return Ok(base64::engine::general_purpose::STANDARD.encode(&bytes));
+            Self::linux_screenshot_base64(crate::linux::screenshot_png())
+        }
+        #[cfg(not(target_os = "linux"))]
+        {
+            if let Some(png_bytes) = Self::fetch_quixi_bridge_bytes("GET", "/screenshot", None) {
+                if png_bytes.starts_with(b"\x89PNG") {
+                    return Ok(base64::engine::general_purpose::STANDARD.encode(&png_bytes));
+                }
+            }
+            #[cfg(target_os = "macos")]
+            {
+                let tmp = std::env::temp_dir().join(format!("quixi-screen-{}.png", std::process::id()));
+                if !Self::is_headless_test_env() && unsafe { CGPreflightScreenCaptureAccess() } {
+                    let status = Command::new("/usr/sbin/screencapture")
+                        .args(["-x", "-t", "png"])
+                        .arg(&tmp)
+                        .status();
+                    if let Ok(st) = status {
+                        if st.success() && tmp.exists() {
+                            let bytes = fs::read(&tmp)?;
+                            let _ = fs::remove_file(&tmp);
+                            if bytes.len() > 100 {
+                                return Ok(base64::engine::general_purpose::STANDARD.encode(&bytes));
+                            }
                         }
                     }
                 }
             }
-        }
-        if let Some(home) = dirs::home_dir() {
-            let last_snap = home.join(".quixi/last_snapshot.png");
-            if let Ok(bytes) = fs::read(&last_snap) {
-                if bytes.starts_with(b"\x89PNG") {
-                    return Ok(base64::engine::general_purpose::STANDARD.encode(&bytes));
+            if let Some(home) = dirs::home_dir() {
+                let last_snap = home.join(".quixi/last_snapshot.png");
+                if let Ok(bytes) = fs::read(&last_snap) {
+                    if bytes.starts_with(b"\x89PNG") {
+                        return Ok(base64::engine::general_purpose::STANDARD.encode(&bytes));
+                    }
                 }
             }
+            // Fallback 1x1 valid PNG if neither OS screen capture TCC nor QuixiDesk window is active
+            Ok("iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNk+M9QDwADhgGAWjR9awAAAABJRU5ErkJggg==".to_string())
         }
-        // Fallback 1x1 valid PNG if neither OS screen capture TCC nor QuixiDesk window is active
-        Ok("iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNk+M9QDwADhgGAWjR9awAAAABJRU5ErkJggg==".to_string())
     }
 
     /// Captures a zoomed region `[x0, y0, x1, y1]` as a base64 PNG string.
     #[cfg_attr(not(any(target_os = "macos", target_os = "linux")), allow(unused_variables))]
     pub fn capture_zoom_base64(x0: i32, y0: i32, x1: i32, y1: i32) -> Result<String> {
         #[cfg(target_os = "linux")]
-        if let Ok(bytes) = crate::linux::screenshot_region_png(x0, y0, x1, y1) {
-            return Ok(base64::engine::general_purpose::STANDARD.encode(&bytes));
+        {
+            Self::linux_screenshot_base64(crate::linux::screenshot_region_png(x0, y0, x1, y1))
         }
         #[cfg(target_os = "macos")]
         {
@@ -662,7 +675,10 @@ impl ComputerUse {
                 }
             }
         }
-        Self::capture_screenshot_base64()
+        #[cfg(not(target_os = "linux"))]
+        {
+            Self::capture_screenshot_base64()
+        }
     }
 
     /// Whether `get_cursor_position` is returning a real measurement.
@@ -916,10 +932,16 @@ impl ComputerUse {
             }
             if !child.wait()?.success() { anyhow::bail!("System clipboard rejected the copy"); }
         }
+        Self::record_clipboard_write(text);
+        Ok(())
+    }
+
+    /// Updates only the in-process read fallback after a successful native clipboard write.
+    /// Does not access the host clipboard or grant/bypass any sandbox clipboard permission.
+    pub fn record_clipboard_write(text: &str) {
         if let Ok(mut st) = cu_state().lock() {
             st.clipboard_fallback = text.to_string();
         }
-        Ok(())
     }
 
     fn is_headless_test_env() -> bool {
@@ -944,42 +966,63 @@ impl ComputerUse {
         Some(trimmed.trim_end_matches('/').to_string())
     }
 
+    #[cfg(target_os = "linux")]
+    fn linux_pick_path(
+        headless: bool,
+        default: impl FnOnce() -> String,
+        picker: impl FnOnce() -> Option<String>,
+    ) -> Option<String> {
+        if headless { Some(default()) } else { picker() }
+    }
+
     /// Opens a native OS folder selection dialog and returns the selected directory path.
     pub fn pick_folder(prompt: Option<&str>) -> Option<String> {
-        if Self::is_headless_test_env() {
-            return Some(quixi_proto::paths::default_workspace_str().to_string());
-        }
-        if let Some(picker) = FOLDER_PICKER.get() {
-            return picker(prompt, false).into_iter().next();
-        }
-        #[cfg(target_os = "macos")]
-        {
-            let title = prompt
-                .filter(|s| !s.trim().is_empty())
-                .unwrap_or("Choose a folder")
-                .replace('\\', "\\\\")
-                .replace('"', "\\\"");
-            let script = format!("POSIX path of (choose folder with prompt \"{}\")", title);
-            if let Ok(out) = Command::new("/usr/bin/osascript")
-                .args(["-e", &script])
-                .output()
-            {
-                if out.status.success() {
-                    let s = String::from_utf8_lossy(&out.stdout);
-                    return Self::normalize_posix_path(&s);
-                }
-            }
-            return None;
-        }
-
         #[cfg(target_os = "linux")]
-        if let Some(picked) = crate::linux::pick_folder(prompt) {
-            return Some(picked);
-        }
-        #[cfg(not(target_os = "macos"))]
         {
-            let _ = prompt;
-            Some(quixi_proto::paths::default_workspace_str().to_string())
+            Self::linux_pick_path(
+                Self::is_headless_test_env(),
+                || quixi_proto::paths::default_workspace_str().to_string(),
+                || {
+                    if let Some(picker) = FOLDER_PICKER.get() {
+                        return picker(prompt, false).into_iter().next();
+                    }
+                    crate::linux::pick_folder(prompt)
+                },
+            )
+        }
+        #[cfg(not(target_os = "linux"))]
+        {
+            if Self::is_headless_test_env() {
+                return Some(quixi_proto::paths::default_workspace_str().to_string());
+            }
+            if let Some(picker) = FOLDER_PICKER.get() {
+                return picker(prompt, false).into_iter().next();
+            }
+            #[cfg(target_os = "macos")]
+            {
+                let title = prompt
+                    .filter(|s| !s.trim().is_empty())
+                    .unwrap_or("Choose a folder")
+                    .replace('\\', "\\\\")
+                    .replace('"', "\\\"");
+                let script = format!("POSIX path of (choose folder with prompt \"{}\")", title);
+                if let Ok(out) = Command::new("/usr/bin/osascript")
+                    .args(["-e", &script])
+                    .output()
+                {
+                    if out.status.success() {
+                        let s = String::from_utf8_lossy(&out.stdout);
+                        return Self::normalize_posix_path(&s);
+                    }
+                }
+                return None;
+            }
+
+            #[cfg(not(target_os = "macos"))]
+            {
+                let _ = prompt;
+                Some(quixi_proto::paths::default_workspace_str().to_string())
+            }
         }
     }
 
@@ -1035,37 +1078,44 @@ impl ComputerUse {
 
     /// Opens a native OS file selection dialog and returns the selected file path.
     pub fn pick_file(prompt: Option<&str>) -> Option<String> {
-        if Self::is_headless_test_env() {
-            return Some(quixi_proto::paths::workspace_join("Cargo.toml"));
-        }
-        #[cfg(target_os = "macos")]
-        {
-            let title = prompt
-                .filter(|s| !s.trim().is_empty())
-                .unwrap_or("Choose a file")
-                .replace('\\', "\\\\")
-                .replace('"', "\\\"");
-            let script = format!("POSIX path of (choose file with prompt \"{}\")", title);
-            if let Ok(out) = Command::new("/usr/bin/osascript")
-                .args(["-e", &script])
-                .output()
-            {
-                if out.status.success() {
-                    let s = String::from_utf8_lossy(&out.stdout);
-                    return Self::normalize_posix_path(&s);
-                }
-            }
-            return None;
-        }
-
         #[cfg(target_os = "linux")]
-        if let Some(picked) = crate::linux::pick_file(prompt) {
-            return Some(picked);
-        }
-        #[cfg(not(target_os = "macos"))]
         {
-            let _ = prompt;
-            Some(quixi_proto::paths::workspace_join("Cargo.toml"))
+            Self::linux_pick_path(
+                Self::is_headless_test_env(),
+                || quixi_proto::paths::workspace_join("Cargo.toml"),
+                || crate::linux::pick_file(prompt),
+            )
+        }
+        #[cfg(not(target_os = "linux"))]
+        {
+            if Self::is_headless_test_env() {
+                return Some(quixi_proto::paths::workspace_join("Cargo.toml"));
+            }
+            #[cfg(target_os = "macos")]
+            {
+                let title = prompt
+                    .filter(|s| !s.trim().is_empty())
+                    .unwrap_or("Choose a file")
+                    .replace('\\', "\\\\")
+                    .replace('"', "\\\"");
+                let script = format!("POSIX path of (choose file with prompt \"{}\")", title);
+                if let Ok(out) = Command::new("/usr/bin/osascript")
+                    .args(["-e", &script])
+                    .output()
+                {
+                    if out.status.success() {
+                        let s = String::from_utf8_lossy(&out.stdout);
+                        return Self::normalize_posix_path(&s);
+                    }
+                }
+                return None;
+            }
+
+            #[cfg(not(target_os = "macos"))]
+            {
+                let _ = prompt;
+                Some(quixi_proto::paths::workspace_join("Cargo.toml"))
+            }
         }
     }
 
@@ -2243,6 +2293,71 @@ impl VmRuntime {
 
 #[cfg(test)]
 mod tests {
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn linux_screenshot_result_preserves_backend_failure() {
+        let png = b"\x89PNGfixture".to_vec();
+        assert_eq!(
+            ComputerUse::linux_screenshot_base64(Ok(png.clone())).unwrap(),
+            base64::engine::general_purpose::STANDARD.encode(&png),
+        );
+        // Neither a failed desktop capture nor a failed crop may turn into a stale/full image.
+        for failure in ["capture denied", "crop outside image"] {
+            let error = ComputerUse::linux_screenshot_base64(Err(anyhow::anyhow!(failure)))
+                .unwrap_err();
+            assert!(error.to_string().starts_with("Linux/Crostini screenshot unavailable"));
+            assert!(format!("{error:#}").contains(failure));
+        }
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn linux_picker_preserves_cancellation_and_headless_default() {
+        for default in ["workspace", "workspace/Cargo.toml"] {
+            assert_eq!(
+                ComputerUse::linux_pick_path(
+                    false,
+                    || panic!("cancel must not select a default"),
+                    || None,
+                ),
+                None,
+            );
+            assert_eq!(
+                ComputerUse::linux_pick_path(
+                    false,
+                    || panic!("selection must not use a default"),
+                    || Some("chosen".into()),
+                ),
+                Some("chosen".into()),
+            );
+            assert_eq!(
+                ComputerUse::linux_pick_path(
+                    true,
+                    || default.into(),
+                    || panic!("headless must not open a picker"),
+                ),
+                Some(default.into()),
+            );
+        }
+    }
+
+    #[test]
+    fn clipboard_record_updates_only_cache() {
+        // The only cache-writing test fixture: restore even if an assertion unwinds.
+        struct RestoreClipboard(String);
+        impl Drop for RestoreClipboard {
+            fn drop(&mut self) {
+                cu_state().lock().unwrap().clipboard_fallback = self.0.clone();
+            }
+        }
+        let _restore = RestoreClipboard(cu_state().lock().unwrap().clipboard_fallback.clone());
+        for text in ["cached text with unicode: \u{00e1}", ""] {
+            ComputerUse::record_clipboard_write(text);
+            let cached = cu_state().lock().unwrap().clipboard_fallback.clone();
+            assert_eq!(cached, text);
+        }
+    }
+
     // Linux-only: on macOS `mouse_move` drives the real CoreGraphics cursor, and the
     // capability probe this test consults is the Linux one.
     #[cfg(target_os = "linux")]
@@ -2390,8 +2505,12 @@ mod tests {
         assert!(!apps.is_empty());
         let (cx, cy) = ComputerUse::get_cursor_position();
         assert!(cx >= 0.0 && cy >= 0.0);
-        let b64 = ComputerUse::capture_screenshot_base64().unwrap();
-        assert!(!b64.is_empty());
+        // Linux capture requires a real desktop; the pure result regression above is deterministic.
+        #[cfg(not(target_os = "linux"))]
+        {
+            let b64 = ComputerUse::capture_screenshot_base64().unwrap();
+            assert!(!b64.is_empty());
+        }
 
         // Test BrowserUse
         let ctx = BrowserUse::tabs_context(true);

@@ -106,8 +106,13 @@ impl QuixiEngine {
     /// Serialize acceptance so concurrent clicks cannot append duplicate requests or cancel each other.
     pub fn send_chat_message(self: &Arc<Self>, session_id: &str, options: &Value) -> Result<Value,String> {
         let text=options["text"].as_str().unwrap_or_default();
+        let has_attachments = options.get("attachments").is_some_and(|v| v.as_array().is_none_or(|a| !a.is_empty()));
+        if let Some(result) = self.handle_local_ai_input(session_id, text, has_attachments) { return Ok(result); }
         let content=prepare_content(text,options.get("attachments"))?;
         let _submission=self.chat_submission.lock();
+        // Admission must also cover the queue path. A cancelled goal worker's scope
+        // must not enqueue a late continuation onto a new turn after INICIAR.
+        let _queue_admission = self.provider_manager.ai_control.start_request()?;
         let agent=self.agent_sessions.read().get(session_id).cloned();
         let code=self.code_sessions.read().get(session_id).cloned();
         if agent.is_none() && code.is_none() {return Err("This conversation no longer exists. Start a new conversation.".into());}
@@ -152,6 +157,7 @@ impl QuixiEngine {
 
     /// Explicitly release one message, never the other held entries.
     pub fn guide_pending_message(self: &Arc<Self>, sid: &str, uuid: &str) -> Result<Value, String> {
+        if self.provider_manager.ai_control.is_paused() { return Err(agent_control::PAUSED_MESSAGE.into()); }
         let _submission = self.chat_submission.lock();
         if uuid.trim().is_empty() { return Err("Choose a pending message.".into()); }
         let agent = self.agent_sessions.read().get(sid).cloned();
@@ -180,6 +186,7 @@ impl QuixiEngine {
     }
 
     pub(crate) fn take_steering(&self, sid: &str) -> Vec<Value> {
+        if self.provider_manager.ai_control.is_paused() { return Vec::new(); }
         let mut pending = self.pending_messages.lock();
         let Some(queue) = pending.get_mut(sid) else {return Vec::new();};
         let mut messages = Vec::new();
@@ -193,6 +200,7 @@ impl QuixiEngine {
 
     // Caller holds chat_submission across completion and dispatch, avoiding an idle race.
     pub(crate) fn start_next_pending(self: &Arc<Self>, sid: &str) {
+        if self.provider_manager.ai_control.is_paused() { return; }
         let next = self.pending_messages.lock().get_mut(sid).and_then(|q| { let index = q.iter().position(|m| m["held"] != true)?; q.remove(index) });
         let Some(next) = next else {return;};
         let text = next["text"].as_str().unwrap_or_default();
@@ -221,6 +229,11 @@ impl QuixiEngine {
             if text.trim().is_empty() && !content.iter().any(|b|b.get("attachment").is_some()) {return Err("Write a message or attach a file.".into());}
             if let Some(first)=content.iter_mut().find(|b|b["type"]=="text"&&b.get("attachment").is_none()) {first["text"]=json!(text);}
             else {content.insert(0,json!({"type":"text","text":text}));}
+        }
+        if agent_control::local_command(&text, agent_control::content_has_attachments(&content)).is_some() || self.provider_manager.ai_control.is_paused() {
+            drop(_submission);
+            if let Some(local) = self.handle_local_ai_input(session_id, &text, agent_control::content_has_attachments(&content)) { return Ok(local); }
+            return Err(agent_control::PAUSED_MESSAGE.into());
         }
         let sid=format!("local_{}",Uuid::new_v4());
         let origin=Some(quixi_proto::SessionForkOrigin{session_id:session_id.into(),message_uuid:messages[index]["uuid"].as_str().unwrap_or(target).into()});
