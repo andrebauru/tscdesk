@@ -240,6 +240,19 @@ impl EipcRouter {
         match (service, member) {
             ("Providers", "saveProvider") => self.engine.provider_manager.save_provider(args.first().unwrap_or(&Value::Null)),
             ("Providers", "testProvider") => self.engine.provider_manager.test_provider(args.first().unwrap_or(&Value::Null)),
+            ("Providers", "getOpenRouterCatalog") => self.engine.provider_manager.openrouter_catalog_state(
+                args.first().and_then(|v| v.get("refresh")).and_then(Value::as_bool).unwrap_or(false)
+            ),
+            ("Providers", "getOpenRouterRecommendation") => self.engine.provider_manager.openrouter_recommendation(args.first().unwrap_or(&Value::Null)),
+            ("Providers", "getUsage") => self.engine.provider_manager.usage_snapshot(
+                args.first().and_then(|v| v.get("sessionId")).and_then(Value::as_str).unwrap_or("")
+            ),
+            ("Providers", "clearUsage") => {
+                if let Some(session_id) = args.first().and_then(|v| v.get("sessionId")).and_then(Value::as_str) {
+                    self.engine.provider_manager.clear_usage(session_id);
+                }
+                json!({"ok": true})
+            },
             ("Providers", "getAgentState") => self.engine.agent_state(),
             ("Providers", "setAgentState") => match args.first().and_then(|v| v.get("paused")).and_then(Value::as_bool) {
                 Some(paused) => self.engine.set_agent_paused(paused),

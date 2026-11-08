@@ -159,7 +159,8 @@ fn parse_output(output: &Value, model: &str) -> Result<ProviderToolTurn, String>
     Ok(ProviderToolTurn {
         response_items: Vec::new(), text: text.into(), thinking: String::new(),
         reasoning_details: None, tool_calls: Vec::new(), provider_name: "RunPod Serverless".into(),
-        model_id: model.into(), stream_error: None, usage,
+        model_id: model.into(), requested_model: model.into(), effective_model: None,
+        cost_usd: None, attempts: 1, stream_error: None, usage,
     })
 }
 

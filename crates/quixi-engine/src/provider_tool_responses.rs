@@ -8,6 +8,10 @@ fn tool_failure(error: String, provider: &str, model: &str) -> ProviderToolTurn 
         response_items: Vec::new(),
         provider_name: provider.into(),
         model_id: model.into(),
+        requested_model: model.into(),
+        effective_model: None,
+        cost_usd: None,
+        attempts: 1,
         stream_error: Some(error),
         usage: None,
     }
@@ -151,6 +155,7 @@ fn parse_responses_tool_stream<R: std::io::BufRead, F: FnMut(StreamChunk)>(
                         cache_read_tokens: cached,
                         cache_write_tokens: 0,
                         reasoning_tokens: rsn,
+                        cost_usd: None,
                     }
                 });
                 return Ok((text, thinking, calls, items, usage));
@@ -247,6 +252,10 @@ impl ProviderManager {
                 response_items,
                 provider_name: "OpenAI".into(),
                 model_id: model.into(),
+                requested_model: model.into(),
+                effective_model: None,
+                cost_usd: None,
+                attempts: 1,
                 stream_error: None,
                 usage,
             },

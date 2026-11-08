@@ -13,6 +13,8 @@
     schedules: [],
     providers: null,
     agentState: null,
+    openRouterCatalog: null,
+    openRouterUsage: null,
     draft: "",
     attachments: [],
     folder: "",
@@ -4154,6 +4156,64 @@
       key.value = "";
     });
   }
+  const OPENROUTER_AUTO_ROUTER = "openrouter/auto";
+
+  function openRouterVendor(model) {
+    return String(model.vendor || (model.id || "").split("/")[0] || "").toLowerCase();
+  }
+  function openRouterContext(model) {
+    const value = model.contextLength ?? model.contextWindow ?? 0;
+    return Number.isFinite(Number(value)) ? Number(value) : 0;
+  }
+  function openRouterPromptPrice(model) {
+    const value = model.promptPricePerMillion;
+    return Number.isFinite(Number(value)) ? Number(value) : null;
+  }
+  function openRouterCompletionPrice(model) {
+    const value = model.completionPricePerMillion;
+    return Number.isFinite(Number(value)) ? Number(value) : null;
+  }
+  function formatPricePerMillion(value) {
+    if (value == null || !Number.isFinite(Number(value))) return "dinâmico";
+    const price = Number(value);
+    if (price === 0) return "grátis";
+    if (price < 0.01) return "$" + price.toFixed(4);
+    return "$" + price.toFixed(2);
+  }
+  function formatTokens(value) {
+    const count = Number(value) || 0;
+    if (count >= 1_000_000) return (count / 1_000_000).toFixed(1) + "M";
+    if (count >= 1_000) return (count / 1_000).toFixed(1) + "K";
+    return String(count);
+  }
+  function formatContext(value) {
+    const count = Number(value) || 0;
+    if (!count) return "contexto não informado";
+    if (count >= 1_000_000) return (count / 1_000_000).toFixed(count % 1_000_000 ? 1 : 0) + "M tokens";
+    return Math.round(count / 1_000) + "K tokens";
+  }
+  function formatUsd(value) {
+    const amount = Number(value);
+    if (!Number.isFinite(amount)) return "—";
+    if (amount === 0) return "$0.00";
+    if (amount < 0.01) return "$" + amount.toFixed(4);
+    return "$" + amount.toFixed(2);
+  }
+  function formatDuration(ms) {
+    const value = Number(ms) || 0;
+    return value >= 1000 ? (value / 1000).toFixed(1) + "s" : Math.round(value) + "ms";
+  }
+  function openRouterModelName(model) {
+    return model.name || model.label || model.id;
+  }
+  async function loadOpenRouterCatalog(refresh = false) {
+    const data = await api(
+      "/api/quixi/providers/openrouter/catalog" + (refresh ? "?refresh=1" : ""),
+    );
+    state.openRouterCatalog = data;
+    return data;
+  }
+
   async function modelPicker(providerId) {
     await loadProviders();
     let providers = state.providers.providers.filter((p) => p.configured);
@@ -4162,6 +4222,14 @@
       return;
     }
     let selected = providerId || state.providers.activeProvider;
+    const filters = {
+      vendor: "",
+      tools: false,
+      free: false,
+      minContext: 0,
+      maxIn: null,
+      maxOut: null,
+    };
     const ps = select(
       providers.map((p) => [p.id, p.name]),
       selected,
@@ -4169,12 +4237,23 @@
         selected = v;
         query.value = "";
         catalogStatus.textContent = "";
-        draw();
+        if (v === "openrouter") {
+          draw();
+          loadOpenRouterCatalog()
+            .then(() => draw())
+            .catch((e) => {
+              catalogStatus.textContent = e.message;
+            });
+        } else {
+          draw();
+        }
       },
       { "aria-label": "Provider" },
     );
+    const controls = el("div", { class: "or-controls" });
     const models = el("div", { class: "model-options" });
     const additions = el("div", { class: "manual-models" });
+    const usage = el("div", { class: "or-usage" });
     const query = el("input", {
       type: "search",
       placeholder: "Find a model…",
@@ -4183,14 +4262,24 @@
     });
     const catalogStatus = el("p", { class: "hint", role: "status" });
     const refresh = button("Refresh models", async () => {
-      if (isRunpodProvider(providers.find(p => p.id === selected) || providers[0])) return;
+      const p = providers.find((x) => x.id === selected) || providers[0];
+      if (isRunpodProvider(p)) return;
       refresh.disabled = true;
       catalogStatus.textContent = "Loading models…";
       try {
-        const r = await api("/api/quixi/providers/test", { providerId: selected });
-        await loadProviders();
-        providers = state.providers.providers.filter((p) => p.configured);
-        catalogStatus.textContent = r.message || (r.ok ? "Models loaded." : "Could not load models.");
+        if (p.id === "openrouter") {
+          const r = await loadOpenRouterCatalog(true);
+          catalogStatus.textContent = r.error
+            ? r.models?.length
+              ? "Catálogo em cache. " + r.error
+              : r.error
+            : `${r.count} modelos carregados do OpenRouter.`;
+        } else {
+          const r = await api("/api/quixi/providers/test", { providerId: selected });
+          await loadProviders();
+          providers = state.providers.providers.filter((p) => p.configured);
+          catalogStatus.textContent = r.message || (r.ok ? "Models loaded." : "Could not load models.");
+        }
         draw();
       } catch (e) { catalogStatus.textContent = e.message; }
       finally { refresh.disabled = false; }
@@ -4199,18 +4288,352 @@
     const anchor=document.querySelector(".model-picker-trigger")?.getBoundingClientRect();
     const d = dialog("Choose model", [
       field("Provider", ps),
+      controls,
       query,
       refresh,
       catalogStatus,
       models,
       additions,
+      usage,
     ]);
     positionPopover(d, anchor);
+
+    function modelMatchesFilters(model) {
+      const text = `${model.id} ${openRouterModelName(model)}`.toLowerCase();
+      if (query.value.trim() && !text.includes(query.value.trim().toLowerCase())) return false;
+      if (filters.vendor && openRouterVendor(model) !== filters.vendor) return false;
+      if (filters.tools && !model.supportsTools) return false;
+      if (filters.free && !model.isFree) return false;
+      if (filters.minContext && openRouterContext(model) < filters.minContext) return false;
+      const input = openRouterPromptPrice(model);
+      const output = openRouterCompletionPrice(model);
+      if (filters.maxIn != null && (input == null || input > filters.maxIn)) return false;
+      if (filters.maxOut != null && (output == null || output > filters.maxOut)) return false;
+      return true;
+    }
+
+    function usagePanel() {
+      usage.replaceChildren(el("p", { class: "hint" }, "Carregando consumo…"));
+      const s = session();
+      if (!s) {
+        usage.replaceChildren(
+          el("p", { class: "hint" }, "O consumo acumulado aparece após a primeira requisição desta sessão."),
+        );
+        return;
+      }
+      api(`/api/quixi/providers/usage?sessionId=${encodeURIComponent(s.sessionId)}`)
+        .then((data) => {
+          if (!usage.isConnected || selected !== "openrouter") return;
+          state.openRouterUsage = data;
+          const last = data.lastRequest;
+          const parts = [
+            el("h3", {}, "Consumo desta sessão"),
+            el("p", { class: "or-usage-line" },
+              `${data.totalRequests} requisições · ${formatTokens(data.inputTokens)} entrada · ${formatTokens(data.outputTokens)} saída`),
+            el("p", { class: "or-usage-line" },
+              `Custo informado pela API: ${formatUsd(data.reportedCostUsd)} · estimado pelo catálogo: ${formatUsd(data.estimatedCostUsd)}`),
+            el("p", { class: "or-usage-line" },
+              `${data.totalErrors} erros · ${data.totalAttempts} tentativas · média ${formatDuration(data.totalRequests ? data.durationMs / data.totalRequests : 0)}`),
+          ];
+          if (last) {
+            const effective = last.effectiveModel && last.effectiveModel !== last.requestedModel
+              ? ` → ${last.effectiveModel}` : "";
+            const cost = last.reportedCostUsd != null
+              ? formatUsd(last.reportedCostUsd) + " informado"
+              : last.estimatedCostUsd != null
+                ? formatUsd(last.estimatedCostUsd) + " estimado"
+                : "custo não informado";
+            parts.push(el("p", { class: "hint or-usage-last" },
+              `Última: ${last.requestedModel}${effective} · ${formatTokens(last.inputTokens)}/${formatTokens(last.outputTokens)} tokens · ${cost} · ${formatDuration(last.durationMs)} · ${last.attempts} tentativa(s)${last.error ? " · " + last.error : ""}`));
+          }
+          parts.push(button("Clear usage", async () => {
+            await api("/api/quixi/providers/usage/clear", { sessionId: s.sessionId });
+            usagePanel();
+          }, "quiet"));
+          usage.replaceChildren(...parts);
+        })
+        .catch((e) => {
+          if (usage.isConnected) usage.replaceChildren(el("p", { class: "hint" }, "Consumo indisponível: " + e.message));
+        });
+    }
+
+    async function saveOpenRouterSelection(p, model) {
+      const router = Boolean(model.isRouter || model.router);
+      const config = router
+        ? { providerId: "openrouter", selectionMode: "auto", autoRouter: model.id, setAsActive: true }
+        : { providerId: "openrouter", selectedModel: model.id, selectionMode: "manual", setAsActive: true };
+      const r = await api("/api/quixi/providers/save", config);
+      if (r.error) throw new Error(r.error);
+      if (session()) await rpc(service(session()), "setModel", [state.id, r.activeModel || model.id]);
+      await loadProviders();
+      d.close();
+      renderPage();
+      toast(router ? "Roteador automático atualizado." : "Model updated.");
+    }
+
+    async function saveOpenRouterMode(p, mode) {
+      const config = { providerId: "openrouter", selectionMode: mode, setAsActive: true };
+      if (mode === "auto") config.autoRouter = p.autoRouter || OPENROUTER_AUTO_ROUTER;
+      const r = await api("/api/quixi/providers/save", config);
+      if (r.error) throw new Error(r.error);
+      if (session()) await rpc(service(session()), "setModel", [state.id, r.activeModel || p.selectedModel]);
+      await loadProviders();
+      providers = state.providers.providers.filter((x) => x.configured);
+      draw();
+    }
+
+    function drawOpenRouter(p) {
+      controls.hidden = false;
+      usage.hidden = false;
+      refresh.hidden = false;
+      refresh.textContent = "Refresh catalog";
+      query.hidden = false;
+      query.placeholder = "Search by name or API ID…";
+      query.oninput = () => drawList(p);
+      const catalog = state.openRouterCatalog;
+      const routers = (catalog?.routers?.length ? catalog.routers : (p.models || []).filter((m) => m.isRouter));
+      const mode = select(
+        [
+          ["auto", "Automático — roteador OpenRouter"],
+          ["manual", "Manual — modelo específico"],
+          ["economic", "Econômico — menor custo que atende"],
+        ],
+        p.selectionMode || "manual",
+        async (value) => {
+          try {
+            await saveOpenRouterMode(p, value);
+            catalogStatus.textContent = value === "economic"
+              ? "O modelo será escolhido por requisição. A estimativa considera ferramentas, contexto, falhas e custo."
+              : value === "auto"
+                ? "O roteador escolhe o modelo e o esforço de raciocínio por requisição."
+                : "Você escolhe o modelo; nenhuma troca automática será feita.";
+          } catch (e) {
+            catalogStatus.textContent = e.message;
+            draw();
+          }
+        },
+        { "aria-label": "OpenRouter selection mode" },
+      );
+      const modeHint = el("p", { class: "hint or-mode-hint" },
+        p.selectionMode === "economic"
+          ? "Escolha por requisição: ferramentas, contexto, histórico de falhas e custo estimado. Não garante qualidade equivalente."
+          : p.selectionMode === "auto"
+            ? "O roteador escolhe o modelo por requisição. Auto Code é ajustado para programação; o preço é dinâmico."
+            : "Você escolhe o modelo. Nenhuma troca automática será feita.");
+      const modeBlock = el("div", { class: "or-mode" }, field("Modo de seleção", mode), modeHint);
+      if (p.selectionMode === "auto") {
+        const router = select(
+          routers.map((m) => [m.id, `${openRouterModelName(m)} (${m.id})`]),
+          p.autoRouter || OPENROUTER_AUTO_ROUTER,
+          async (value) => {
+            try {
+              const r = await api("/api/quixi/providers/save", {
+                providerId: "openrouter",
+                selectionMode: "auto",
+                autoRouter: value,
+                setAsActive: true,
+              });
+              if (r.error) throw new Error(r.error);
+              if (session()) await rpc(service(session()), "setModel", [state.id, r.activeModel || value]);
+              await loadProviders();
+              providers = state.providers.providers.filter((x) => x.configured);
+              draw();
+            } catch (e) {
+              catalogStatus.textContent = e.message;
+            }
+          },
+          { "aria-label": "OpenRouter auto router" },
+        );
+        modeBlock.append(field("Roteador", router),
+          el("p", { class: "hint" },
+            "Auto Router é geral; Auto Code é ajustado para programação. Ambos usam IDs oficiais e preço dinâmico informado pelo OpenRouter."));
+      }
+
+      const vendors = [...new Set((catalog?.models || p.models || []).map(openRouterVendor).filter(Boolean))].sort();
+      const vendor = select(
+        [["", "Todos os fornecedores"], ...vendors.map((v) => [v, v])],
+        filters.vendor,
+        (value) => { filters.vendor = value; drawList(p); },
+        { "aria-label": "Vendor filter" },
+      );
+      const tools = el("input", {
+        type: "checkbox",
+        checked: filters.tools,
+        onChange: (e) => { filters.tools = e.target.checked; drawList(p); },
+      });
+      const free = el("input", {
+        type: "checkbox",
+        checked: filters.free,
+        onChange: (e) => { filters.free = e.target.checked; drawList(p); },
+      });
+      const minContext = select(
+        [["0", "Qualquer contexto"], ["32000", "32K+"], ["128000", "128K+"], ["200000", "200K+"], ["1000000", "1M+"]],
+        String(filters.minContext),
+        (value) => { filters.minContext = Number(value); drawList(p); },
+        { "aria-label": "Minimum context" },
+      );
+      const maxIn = el("input", {
+        type: "number", min: "0", step: "0.01", placeholder: "Qualquer",
+        value: filters.maxIn == null ? "" : String(filters.maxIn),
+        "aria-label": "Maximum input price per million tokens",
+        onInput: (e) => {
+          filters.maxIn = e.target.value === "" ? null : Number(e.target.value);
+          drawList(p);
+        },
+      });
+      const maxOut = el("input", {
+        type: "number", min: "0", step: "0.01", placeholder: "Qualquer",
+        value: filters.maxOut == null ? "" : String(filters.maxOut),
+        "aria-label": "Maximum output price per million tokens",
+        onInput: (e) => {
+          filters.maxOut = e.target.value === "" ? null : Number(e.target.value);
+          drawList(p);
+        },
+      });
+      controls.replaceChildren(
+        modeBlock,
+        el("div", { class: "or-filters" },
+          el("label", { class: "or-filter" }, el("span", {}, "Fornecedor"), vendor),
+          el("label", { class: "or-filter" }, el("span", {}, "Contexto mínimo"), minContext),
+          el("label", { class: "or-filter or-check" }, tools, el("span", {}, "Somente ferramentas")),
+          el("label", { class: "or-filter or-check" }, free, el("span", {}, "Somente gratuitos")),
+          el("label", { class: "or-filter" }, el("span", {}, "Preço máx. entrada (USD/1M)"), maxIn),
+          el("label", { class: "or-filter" }, el("span", {}, "Preço máx. saída (USD/1M)"), maxOut),
+        ),
+        el("p", { class: "hint" }, "Preços em USD por 1 milhão de tokens. “Dinâmico” significa que o OpenRouter decide o preço por requisição."),
+      );
+
+      drawList(p);
+    }
+
+    function drawList(p) {
+      const catalog = state.openRouterCatalog;
+      const source = catalog?.models?.length ? catalog.models : (p.models || []);
+      const list = source
+        .filter(modelMatchesFilters)
+        .sort((a, b) =>
+          Number(b.id === p.selectedModel) - Number(a.id === p.selectedModel) ||
+          Number(Boolean(b.isRouter)) - Number(Boolean(a.isRouter)) ||
+          openRouterVendor(a).localeCompare(openRouterVendor(b)) ||
+          openRouterModelName(a).localeCompare(openRouterModelName(b)));
+      models.replaceChildren(...list.map((m) => {
+        const badges = [];
+        if (m.supportsTools) badges.push(el("span", { class: "badge" }, "Tools"));
+        if (m.isFree) badges.push(el("span", { class: "badge badge-free" }, "Free"));
+        if (m.isRouter) badges.push(el("span", { class: "badge badge-router" }, "Router"));
+        const meta = el("span", { class: "or-model-meta" },
+          `${openRouterVendor(m) || "—"} · ${formatContext(openRouterContext(m))} · entrada ${formatPricePerMillion(openRouterPromptPrice(m))} / saída ${formatPricePerMillion(openRouterCompletionPrice(m))} por 1M`,
+          ...badges);
+        const row = button(
+          [
+            el("span", { class: "grow" },
+              el("span", { class: "or-model-name" }, openRouterModelName(m)),
+              el("span", { class: "or-model-id" }, m.id),
+              meta,
+              p.customModels?.includes(m.id) && !m.isRouter
+                ? el("small", { class: "hint model-origin" }, "Added manually")
+                : null),
+            m.id === p.selectedModel ? icon("check", 14) : null,
+          ],
+          async () => {
+            try {
+              await saveOpenRouterSelection(p, m);
+            } catch (e) {
+              catalogStatus.textContent = e.message;
+            }
+          },
+          "list-row or-model-row",
+        );
+        row.setAttribute("aria-label", m.id);
+        return row;
+      }));
+      if (!models.childElementCount) {
+        models.append(el("p", { class: "hint" },
+          catalog?.error && !source.length
+            ? "Catálogo indisponível: " + catalog.error
+            : query.value.trim() || filters.vendor || filters.tools || filters.free || filters.minContext || filters.maxIn != null || filters.maxOut != null
+              ? "Nenhum modelo corresponde aos filtros. Ajuste a busca ou limpe os filtros."
+              : "Nenhum modelo carregado. Atualize o catálogo ou adicione um modelo não anunciado abaixo."));
+      }
+      catalogStatus.textContent = catalog
+        ? `${catalog.count || source.length} modelos · ${catalog.cached ? "cache local" : "atualizado agora"}${catalog.stale ? " · cache antigo" : ""}${catalog.error ? " · " + catalog.error : ""}`
+        : "Catálogo ainda não carregado. Use Refresh catalog para buscar a lista completa do OpenRouter.";
+      additions.replaceChildren();
+      if (["custom", "openrouter"].includes(p.id)) {
+        const input = el("input", {
+          placeholder: "e.g. organization/model-name",
+          "aria-label": "Model ID",
+          autocomplete: "off",
+          autocapitalize: "off",
+          spellcheck: "false",
+        });
+        const error = el("div", { class: "form-error", role: "alert" });
+        const submit = button(
+          "Add model",
+          async () => {
+            const id = input.value.trim();
+            if (!id) {
+              error.textContent = "Enter a model ID.";
+              input.focus();
+              return;
+            }
+            submit.disabled = true;
+            try {
+              const r = await api("/api/quixi/providers/save", {
+                providerId: p.id,
+                customModel: id,
+                selectCustomModel: false,
+                setAsActive: false,
+              });
+              if (r.error) throw new Error(r.error);
+              await loadProviders();
+              providers = state.providers.providers.filter((p) => p.configured);
+              query.value = "";
+              draw();
+              toast("Model saved. Select it above when you’re ready.");
+            } catch (e) {
+              error.textContent = e.message;
+            } finally {
+              submit.disabled = false;
+            }
+          },
+          "quiet",
+        );
+        input.addEventListener("keydown", (e) => {
+          if (e.key === "Enter") {
+            e.preventDefault();
+            submit.click();
+          }
+        });
+        additions.append(
+          el("hr"),
+          el("details", {},
+            el("summary", {}, "Add an unadvertised model"),
+            el("p", { class: "hint" },
+              "Use an exact model ID even if this provider doesn’t advertise it. Adding a model keeps your current selection."),
+            field("Model ID", input),
+            error,
+            submit,
+          ),
+        );
+      }
+      usagePanel();
+    }
+
     function draw() {
       const p = providers.find((x) => x.id === selected) || providers[0];
       const runpod = isRunpodProvider(p);
       refresh.hidden = runpod;
       query.hidden = runpod;
+      if (p.id === "openrouter" && !runpod) {
+        drawOpenRouter(p);
+        return;
+      }
+      controls.hidden = true;
+      usage.hidden = true;
+      query.oninput = () => draw();
+      query.placeholder = "Find a model…";
+      refresh.textContent = "Refresh models";
       models.replaceChildren(
         ...[...(p.models || [])]
           .filter((m) => `${m.id} ${m.label || ""}`.toLowerCase().includes(query.value.trim().toLowerCase()))
@@ -4326,6 +4749,13 @@
       }
     }
     draw();
+    if (selected === "openrouter") {
+      loadOpenRouterCatalog()
+        .then(() => draw())
+        .catch((e) => {
+          catalogStatus.textContent = e.message;
+        });
+    }
   }
   async function openExternal(url) {
     const parsed = new URL(url);

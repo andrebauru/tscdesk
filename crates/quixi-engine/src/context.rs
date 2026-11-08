@@ -139,6 +139,12 @@ impl QuixiEngine {
             .flat_map(|p| p.models.iter())
             .find(|m| m.id == model)
             .map(|m| m.context_window as usize)
+            .or_else(|| {
+                self.provider_manager
+                    .openrouter
+                    .context_window(model)
+                    .map(|value| value as usize)
+            })
             .unwrap_or(128_000)
             .clamp(8_000, 2_000_000)
     }
@@ -435,6 +441,7 @@ mod recovery_tests {
                     context_window: 8000,
                     supports_thinking: false,
                     supports_vision: true,
+                    ..Default::default()
                 }];
             }
             let mut messages = vec![json!({"role":"system","content":"System instructions"})];

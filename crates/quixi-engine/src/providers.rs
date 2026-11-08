@@ -42,7 +42,7 @@ pub enum StreamChunk {
     Thinking(String),
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ProviderModelInfo {
     pub id: String,
@@ -50,6 +50,21 @@ pub struct ProviderModelInfo {
     pub context_window: u32,
     pub supports_thinking: bool,
     pub supports_vision: bool,
+    /// OpenRouter (or another dynamic catalog) vendor prefix.
+    #[serde(default)]
+    pub vendor: String,
+    /// USD per one million input tokens. `None` means dynamic or unknown.
+    #[serde(default)]
+    pub prompt_price_per_million: Option<f64>,
+    /// USD per one million output tokens. `None` means dynamic or unknown.
+    #[serde(default)]
+    pub completion_price_per_million: Option<f64>,
+    #[serde(default)]
+    pub supports_tools: bool,
+    #[serde(default)]
+    pub is_free: bool,
+    #[serde(default)]
+    pub is_router: bool,
 }
 
 #[derive(Clone, Serialize, Deserialize)]
@@ -88,6 +103,16 @@ pub struct ProviderEntry {
     // RunPod queue endpoint identifier; credentials use api_key_raw like other providers.
     #[serde(default)]
     pub endpoint_id: String,
+    /// OpenRouter model selection policy: "manual" | "auto" | "economic".
+    #[serde(default = "default_selection_mode")]
+    pub selection_mode: String,
+    /// Official Auto Router slug used when selection_mode is "auto".
+    #[serde(default)]
+    pub auto_router: String,
+}
+
+fn default_selection_mode() -> String {
+    "manual".to_string()
 }
 
 // Never include raw API keys or OAuth tokens in diagnostic formatting.
@@ -136,6 +161,8 @@ pub struct ProviderManager {
     pub state: RwLock<ProvidersStateFile>,
     pub pending_oauth: RwLock<HashMap<String, PendingOAuthSession>>,
     pub(crate) ai_control: crate::agent_control::AgentControl,
+    pub openrouter: crate::openrouter_catalog::OpenRouterCatalog,
+    pub usage: crate::usage_ledger::UsageLedger,
 }
 
 impl ProviderManager {
@@ -170,6 +197,8 @@ impl ProviderManager {
             state: RwLock::new(state),
             pending_oauth: RwLock::new(HashMap::new()),
             ai_control: crate::agent_control::AgentControl::new(data_dir),
+            openrouter: crate::openrouter_catalog::OpenRouterCatalog::new(data_dir),
+            usage: crate::usage_ledger::UsageLedger::new(data_dir),
         };
         mgr.persist();
         mgr
@@ -188,6 +217,7 @@ impl ProviderManager {
             context_window,
             supports_thinking,
             supports_vision,
+            ..Default::default()
         }
     }
 
@@ -225,6 +255,9 @@ impl ProviderManager {
                 configured: false,
                 selected_model: "anthropic/claude-sonnet-4.6".to_string(),
                 models: vec![
+                    Self::openrouter_router_model("openrouter/auto", "Auto Router"),
+                    Self::openrouter_router_model("openrouter/auto-code", "Auto Code"),
+                    Self::openrouter_router_model("openrouter/auto-beta", "Auto Router (Beta)"),
                     Self::model("anthropic/claude-sonnet-4.6", "Claude Sonnet 4.6 (via OpenRouter)", 200_000, true, true),
                     Self::model("anthropic/claude-opus-4.6", "Claude Opus 4.6 (via OpenRouter)", 200_000, true, true),
                     Self::model("openai/gpt-5.4", "GPT-5.4 (via OpenRouter)", 256_000, true, true),
@@ -239,6 +272,8 @@ impl ProviderManager {
                 last_tested_ok: None,
                 last_latency_ms: None,
                 endpoint_id: String::new(),
+                selection_mode: "manual".to_string(),
+                auto_router: String::new(),
             },
             // 2. Custom Endpoint (Second on the list)
             ProviderEntry {
@@ -270,6 +305,8 @@ impl ProviderManager {
                 last_tested_ok: None,
                 last_latency_ms: None,
                 endpoint_id: String::new(),
+                selection_mode: "manual".to_string(),
+                auto_router: String::new(),
             },
             // RunPod keeps its existing ID and rank; queue API, not an OpenAI/SSE URL.
             ProviderEntry {
@@ -301,6 +338,8 @@ impl ProviderManager {
                 last_tested_ok: None,
                 last_latency_ms: None,
                 endpoint_id: String::new(),
+                selection_mode: "manual".to_string(),
+                auto_router: String::new(),
             },
             // 4. OpenAI (Fourth on the list — supports OAuth!)
             ProviderEntry {
@@ -345,6 +384,8 @@ impl ProviderManager {
                 last_tested_ok: None,
                 last_latency_ms: None,
                 endpoint_id: String::new(),
+                selection_mode: "manual".to_string(),
+                auto_router: String::new(),
             },
             // 4. Grok / xAI (Fourth on the list — supports OAuth!)
             ProviderEntry {
@@ -381,6 +422,8 @@ impl ProviderManager {
                 last_tested_ok: None,
                 last_latency_ms: None,
                 endpoint_id: String::new(),
+                selection_mode: "manual".to_string(),
+                auto_router: String::new(),
             },
             // 5. Anthropic (Fifth on the list — API Key only, no OAuth)
             ProviderEntry {
@@ -416,6 +459,8 @@ impl ProviderManager {
                 last_tested_ok: None,
                 last_latency_ms: None,
                 endpoint_id: String::new(),
+                selection_mode: "manual".to_string(),
+                auto_router: String::new(),
             },
             // 6. Google Gemini
             ProviderEntry {
@@ -451,6 +496,8 @@ impl ProviderManager {
                 last_tested_ok: None,
                 last_latency_ms: None,
                 endpoint_id: String::new(),
+                selection_mode: "manual".to_string(),
+                auto_router: String::new(),
             },
             // 7. DeepSeek
             ProviderEntry {
@@ -493,6 +540,8 @@ impl ProviderManager {
                 last_tested_ok: None,
                 last_latency_ms: None,
                 endpoint_id: String::new(),
+                selection_mode: "manual".to_string(),
+                auto_router: String::new(),
             },
             // 8. Groq
             ProviderEntry {
@@ -528,6 +577,8 @@ impl ProviderManager {
                 last_tested_ok: None,
                 last_latency_ms: None,
                 endpoint_id: String::new(),
+                selection_mode: "manual".to_string(),
+                auto_router: String::new(),
             },
             // 9. Mistral
             ProviderEntry {
@@ -562,6 +613,8 @@ impl ProviderManager {
                 last_tested_ok: None,
                 last_latency_ms: None,
                 endpoint_id: String::new(),
+                selection_mode: "manual".to_string(),
+                auto_router: String::new(),
             },
             // 10. MiniMax
             ProviderEntry {
@@ -596,6 +649,8 @@ impl ProviderManager {
                 last_tested_ok: None,
                 last_latency_ms: None,
                 endpoint_id: String::new(),
+                selection_mode: "manual".to_string(),
+                auto_router: String::new(),
             },
             // 11. Zhipu / GLM
             ProviderEntry {
@@ -630,6 +685,8 @@ impl ProviderManager {
                 last_tested_ok: None,
                 last_latency_ms: None,
                 endpoint_id: String::new(),
+                selection_mode: "manual".to_string(),
+                auto_router: String::new(),
             },
             // 12. Moonshot / Kimi
             ProviderEntry {
@@ -664,6 +721,8 @@ impl ProviderManager {
                 last_tested_ok: None,
                 last_latency_ms: None,
                 endpoint_id: String::new(),
+                selection_mode: "manual".to_string(),
+                auto_router: String::new(),
             },
             // 13. Cohere
             ProviderEntry {
@@ -698,6 +757,8 @@ impl ProviderManager {
                 last_tested_ok: None,
                 last_latency_ms: None,
                 endpoint_id: String::new(),
+                selection_mode: "manual".to_string(),
+                auto_router: String::new(),
             },
             // 14. Together AI
             ProviderEntry {
@@ -732,6 +793,8 @@ impl ProviderManager {
                 last_tested_ok: None,
                 last_latency_ms: None,
                 endpoint_id: String::new(),
+                selection_mode: "manual".to_string(),
+                auto_router: String::new(),
             },
             // 15. Fireworks AI
             ProviderEntry {
@@ -766,6 +829,8 @@ impl ProviderManager {
                 last_tested_ok: None,
                 last_latency_ms: None,
                 endpoint_id: String::new(),
+                selection_mode: "manual".to_string(),
+                auto_router: String::new(),
             },
             // 16. Ollama (Local)
             ProviderEntry {
@@ -801,6 +866,8 @@ impl ProviderManager {
                 last_tested_ok: None,
                 last_latency_ms: None,
                 endpoint_id: String::new(),
+                selection_mode: "manual".to_string(),
+                auto_router: String::new(),
             },
             // 17. LM Studio (Local)
             ProviderEntry {
@@ -834,6 +901,8 @@ impl ProviderManager {
                 last_tested_ok: None,
                 last_latency_ms: None,
                 endpoint_id: String::new(),
+                selection_mode: "manual".to_string(),
+                auto_router: String::new(),
             },
             // 18. vLLM (Local)
             ProviderEntry {
@@ -867,6 +936,8 @@ impl ProviderManager {
                 last_tested_ok: None,
                 last_latency_ms: None,
                 endpoint_id: String::new(),
+                selection_mode: "manual".to_string(),
+                auto_router: String::new(),
             },
             // 19. llama.cpp (Local)
             ProviderEntry {
@@ -900,6 +971,8 @@ impl ProviderManager {
                 last_tested_ok: None,
                 last_latency_ms: None,
                 endpoint_id: String::new(),
+                selection_mode: "manual".to_string(),
+                auto_router: String::new(),
             },
         ];
 
@@ -1023,6 +1096,14 @@ impl ProviderManager {
                     if let Some(cw) = saved_p.get("contextWindow").and_then(|v| v.as_u64()) {
                         entry.context_window = cw as u32;
                     }
+                    if let Some(mode) = saved_p.get("selectionMode").and_then(Value::as_str) {
+                        if matches!(mode, "manual" | "auto" | "economic") {
+                            entry.selection_mode = mode.to_string();
+                        }
+                    }
+                    if let Some(router) = saved_p.get("autoRouter").and_then(Value::as_str) {
+                        entry.auto_router = router.to_string();
+                    }
                     if let Some(saved_models) = saved_p.get("models").and_then(|v| v.as_array()) {
                         for sm_val in saved_models {
                             if let Ok(pm) = serde_json::from_value::<ProviderModelInfo>(sm_val.clone())
@@ -1054,6 +1135,24 @@ impl ProviderManager {
                         }
                     }
                 }
+            }
+        }
+        if let Some(entry) = catalog.providers.iter_mut().find(|p| p.id == "openrouter") {
+            if entry.selection_mode == "auto" {
+                let router = if entry.auto_router.is_empty()
+                    || !entry.auto_router.starts_with("openrouter/auto")
+                {
+                    "openrouter/auto".to_string()
+                } else {
+                    entry.auto_router.clone()
+                };
+                if !entry.models.iter().any(|m| m.id == router) {
+                    entry.models.insert(
+                        0,
+                        Self::openrouter_router_model(&router, "Auto Router"),
+                    );
+                }
+                entry.auto_router = router;
             }
         }
         if let Some(entry) = catalog.providers.iter_mut().find(|p| p.id == "runpod-ollama") {
@@ -1198,6 +1297,18 @@ impl ProviderManager {
         if provider_id == "runpod-ollama" {
             return self.save_runpod_provider(body);
         }
+        if provider_id == "openrouter" {
+            if let Some(mode) = body.get("selectionMode").and_then(Value::as_str) {
+                if !matches!(mode, "manual" | "auto" | "economic") {
+                    return json!({"error":"Select manual, automatic or economic model selection."});
+                }
+            }
+            if let Some(router) = body.get("autoRouter").and_then(Value::as_str) {
+                if !router.is_empty() && !self.openrouter.is_known_router(router) {
+                    return json!({"error":"Choose an official OpenRouter Auto Router slug."});
+                }
+            }
+        }
         let mut st = self.state.write();
         let Some(existing) = st.providers.iter().find(|p| p.id == provider_id) else {
             return json!({"error":"Unknown provider."});
@@ -1264,10 +1375,17 @@ impl ProviderManager {
                         entry.custom_models.push(cm.to_string());
                     }
                     if !entry.models.iter().any(|m| m.id == cm) {
-                        entry.models.insert(
-                            0,
-                            Self::model(cm, cm, entry.context_window, true, true),
-                        );
+                        let info = if provider_id == "openrouter" {
+                            self.openrouter
+                                .model(cm)
+                                .map(|model| Self::provider_model_from_catalog(&model))
+                                .unwrap_or_else(|| {
+                                    Self::model(cm, cm, entry.context_window, true, true)
+                                })
+                        } else {
+                            Self::model(cm, cm, entry.context_window, true, true)
+                        };
+                        entry.models.insert(0, info);
                     }
                     if body.get("selectCustomModel").and_then(Value::as_bool).unwrap_or(true) {
                         entry.selected_model = cm.to_string();
@@ -1277,16 +1395,67 @@ impl ProviderManager {
             if let Some(sel_model) = body.get("selectedModel").and_then(|v| v.as_str()) {
                 let sm = sel_model.trim();
                 if !sm.is_empty() {
+                    let catalog_model = if provider_id == "openrouter" {
+                        self.openrouter.model(sm)
+                    } else {
+                        None
+                    };
                     if !entry.models.iter().any(|m| m.id == sm) {
-                        if matches!(provider_id, "custom" | "openrouter") && !entry.custom_models.iter().any(|id| id == sm) {
+                        if catalog_model.is_none()
+                            && matches!(provider_id, "custom" | "openrouter")
+                            && !entry.custom_models.iter().any(|id| id == sm)
+                        {
                             entry.custom_models.push(sm.to_string());
                         }
-                        entry.models.insert(
-                            0,
-                            Self::model(sm, sm, entry.context_window, true, true),
-                        );
+                        let info = catalog_model
+                            .as_ref()
+                            .map(Self::provider_model_from_catalog)
+                            .unwrap_or_else(|| {
+                                Self::model(sm, sm, entry.context_window, true, true)
+                            });
+                        if info.context_window >= 1024 {
+                            entry.context_window = info.context_window;
+                        }
+                        entry.models.insert(0, info);
                     }
                     entry.selected_model = sm.to_string();
+                }
+            }
+            if provider_id == "openrouter" {
+                if let Some(mode) = body.get("selectionMode").and_then(Value::as_str) {
+                    entry.selection_mode = mode.to_string();
+                }
+                if let Some(router) = body.get("autoRouter").and_then(Value::as_str) {
+                    entry.auto_router = router.to_string();
+                }
+                if entry.selection_mode == "auto" {
+                    let router = if self.openrouter.is_known_router(&entry.auto_router) {
+                        entry.auto_router.clone()
+                    } else {
+                        crate::openrouter_catalog::AUTO_ROUTER_ID.to_string()
+                    };
+                    if !entry.models.iter().any(|m| m.id == router) {
+                        let info = self
+                            .openrouter
+                            .model(&router)
+                            .map(|model| Self::provider_model_from_catalog(&model))
+                            .unwrap_or_else(|| {
+                                Self::openrouter_router_model(&router, "Auto Router")
+                            });
+                        entry.models.insert(0, info);
+                    }
+                    entry.auto_router = router.clone();
+                    entry.selected_model = router;
+                } else if entry.selection_mode == "economic" {
+                    let picked = self.openrouter.economic_pick(true, 32_000, 8_000, 4_000);
+                    if let Some(model) = picked {
+                        if !entry.models.iter().any(|m| m.id == model.id) {
+                            entry
+                                .models
+                                .insert(0, Self::provider_model_from_catalog(&model));
+                        }
+                        entry.selected_model = model.id;
+                    }
                 }
             }
             entry.configured = true;
@@ -1662,6 +1831,181 @@ impl ProviderManager {
             "message": message,
             "discoveredModels": discovered_models,
         })
+    }
+
+    /// Refreshes or reads the cached OpenRouter catalog. The configured key is
+    /// reused only as a Bearer header; it is never returned or logged.
+    pub fn openrouter_catalog_state(&self, refresh: bool) -> Value {
+        let key = self
+            .state
+            .read()
+            .providers
+            .iter()
+            .find(|p| p.id == "openrouter")
+            .map(|p| p.api_key_raw.clone())
+            .filter(|key| !key.trim().is_empty());
+        self.openrouter.snapshot(refresh, key.as_deref())
+    }
+
+    /// Previews the model economic mode would prefer for the given envelope.
+    /// This is an estimate; the request-time choice also sees the real context.
+    pub fn openrouter_recommendation(&self, body: &Value) -> Value {
+        let needs_tools = body
+            .get("tools")
+            .and_then(Value::as_bool)
+            .unwrap_or(true);
+        let min_context = body
+            .get("minContext")
+            .and_then(Value::as_u64)
+            .unwrap_or(32_000)
+            .max(8_000);
+        let expected_input = body
+            .get("expectedInputTokens")
+            .and_then(Value::as_u64)
+            .unwrap_or(8_000);
+        let expected_output = body
+            .get("expectedOutputTokens")
+            .and_then(Value::as_u64)
+            .unwrap_or(4_000);
+        match self
+            .openrouter
+            .economic_pick(needs_tools, min_context, expected_input, expected_output)
+        {
+            Some(model) => json!({
+                "ok": true,
+                "model": model,
+                "estimatedCostUsd": self.openrouter.estimate_cost(&model.id, expected_input, expected_output),
+                "criteria": {
+                    "tools": needs_tools,
+                    "minContext": min_context,
+                    "expectedInputTokens": expected_input,
+                    "expectedOutputTokens": expected_output,
+                    "note": "Estimativa de custo e capacidade; não garante qualidade equivalente entre modelos."
+                }
+            }),
+            None => json!({
+                "ok": false,
+                "error": "Nenhum modelo do catálogo atende aos requisitos de ferramentas e contexto. Atualize o catálogo ou escolha manualmente."
+            }),
+        }
+    }
+
+    pub fn usage_snapshot(&self, session_id: &str) -> Value {
+        self.usage.snapshot(session_id)
+    }
+
+    pub fn clear_usage(&self, session_id: &str) {
+        self.usage.clear(session_id);
+    }
+
+    pub fn estimate_request_cost(
+        &self,
+        model: &str,
+        input_tokens: u64,
+        output_tokens: u64,
+    ) -> Option<f64> {
+        self.openrouter.estimate_cost(model, input_tokens, output_tokens)
+    }
+
+    pub fn record_request_usage(
+        &self,
+        session_id: &str,
+        request: crate::usage_ledger::RequestUsage,
+    ) {
+        let effective = request
+            .effective_model
+            .as_deref()
+            .unwrap_or(&request.requested_model);
+        self.openrouter
+            .record_health(effective, request.error.is_none());
+        self.usage.record(session_id, request);
+    }
+
+    fn provider_model_from_catalog(model: &crate::openrouter_catalog::OpenRouterModel) -> ProviderModelInfo {
+        ProviderModelInfo {
+            id: model.id.clone(),
+            label: if model.name.trim().is_empty() {
+                model.id.clone()
+            } else {
+                model.name.clone()
+            },
+            context_window: model.context_length.min(u32::MAX as u64) as u32,
+            supports_thinking: false,
+            supports_vision: model.supports_vision,
+            vendor: model.vendor.clone(),
+            prompt_price_per_million: model.prompt_price_per_million,
+            completion_price_per_million: model.completion_price_per_million,
+            supports_tools: model.supports_tools,
+            is_free: model.is_free,
+            is_router: model.is_router,
+        }
+    }
+
+    fn openrouter_router_model(id: &str, label: &str) -> ProviderModelInfo {
+        ProviderModelInfo {
+            id: id.to_string(),
+            label: label.to_string(),
+            context_window: 2_000_000,
+            supports_thinking: false,
+            supports_vision: false,
+            vendor: "openrouter".to_string(),
+            supports_tools: true,
+            is_router: true,
+            ..Default::default()
+        }
+    }
+
+    /// Resolves the model actually sent for an OpenRouter request.
+    /// Manual mode preserves the user's selection. Auto mode uses an official
+    /// router slug. Economic mode chooses per request from the live catalog.
+    fn openrouter_request_model(
+        entry: &ProviderEntry,
+        catalog: &crate::openrouter_catalog::OpenRouterCatalog,
+        resolved_model: &str,
+        tools_required: bool,
+        messages: &[Value],
+    ) -> String {
+        if entry.id != "openrouter" {
+            return if entry.models.iter().any(|m| m.id == resolved_model)
+                || entry.selected_model == resolved_model
+            {
+                resolved_model.to_string()
+            } else {
+                entry.selected_model.clone()
+            };
+        }
+        match entry.selection_mode.as_str() {
+            "auto" => {
+                if catalog.is_known_router(&entry.auto_router) {
+                    entry.auto_router.clone()
+                } else {
+                    crate::openrouter_catalog::AUTO_ROUTER_ID.to_string()
+                }
+            }
+            "economic" => {
+                let estimated_input = crate::context::estimated_tokens(messages) as u64;
+                let min_context = estimated_input.saturating_add(8_192).max(32_000);
+                catalog
+                    .economic_pick(tools_required, min_context, estimated_input, 4_096)
+                    .map(|model| model.id)
+                    .unwrap_or_else(|| {
+                        if entry.selected_model.is_empty() {
+                            resolved_model.to_string()
+                        } else {
+                            entry.selected_model.clone()
+                        }
+                    })
+            }
+            _ => {
+                if entry.models.iter().any(|m| m.id == resolved_model)
+                    || entry.selected_model == resolved_model
+                {
+                    resolved_model.to_string()
+                } else {
+                    entry.selected_model.clone()
+                }
+            }
+        }
     }
 
     pub fn detect_local_servers(&self) -> Value {
@@ -2815,13 +3159,13 @@ impl ProviderManager {
                 entry.api_key_raw.clone()
             };
 
-            let chosen_model = if entry.models.iter().any(|m| m.id == resolved_model)
-                || entry.selected_model == resolved_model
-            {
-                resolved_model
-            } else {
-                entry.selected_model.clone()
-            };
+            let chosen_model = Self::openrouter_request_model(
+                entry,
+                &self.openrouter,
+                &resolved_model,
+                false,
+                &[json!({"role": "user", "content": prompt})],
+            );
 
             (
                 entry.id.clone(),
@@ -3190,6 +3534,9 @@ pub struct ProviderTokenUsage {
     pub cache_read_tokens: u64,
     pub cache_write_tokens: u64,
     pub reasoning_tokens: u64,
+    /// Cost reported by the provider API in USD, when available.
+    #[serde(default)]
+    pub cost_usd: Option<f64>,
 }
 
 /// One tool call requested by the model.
@@ -3211,6 +3558,10 @@ pub struct ProviderToolTurn {
     pub tool_calls: Vec<ProviderToolCall>,
     pub provider_name: String,
     pub model_id: String,
+    pub requested_model: String,
+    pub effective_model: Option<String>,
+    pub cost_usd: Option<f64>,
+    pub attempts: u32,
     pub stream_error: Option<String>,
     pub usage: Option<ProviderTokenUsage>,
 }
@@ -3390,13 +3741,13 @@ impl ProviderManager {
             } else {
                 entry.api_key_raw.clone()
             };
-            let chosen_model = if entry.models.iter().any(|m| m.id == resolved_model)
-                || entry.selected_model == resolved_model
-            {
-                resolved_model
-            } else {
-                entry.selected_model.clone()
-            };
+            let chosen_model = Self::openrouter_request_model(
+                entry,
+                &self.openrouter,
+                &resolved_model,
+                tools.as_array().is_some_and(|items| !items.is_empty()),
+                messages,
+            );
             let model_thinks = entry
                 .models
                 .iter()
@@ -3560,7 +3911,7 @@ impl ProviderManager {
             return Some(tool_failure(format!("{provider_name} returned HTTP {} for model `{model_id}`: {}", status.as_u16(), body.chars().take(400).collect::<String>()), &provider_name, &model_id));
         }
 
-        let (text, thinking, reasoning_details, tool_calls, usage) = match parse_tool_stream(BufReader::new(resp), &mut on_chunk) {
+        let (text, thinking, reasoning_details, tool_calls, usage, effective_model) = match parse_tool_stream(BufReader::new(resp), &mut on_chunk) {
             Ok(turn) => turn,
             Err(error) => {
                 let fallback_text = format!("Provider turn failed: {error}");
@@ -3571,7 +3922,11 @@ impl ProviderManager {
                     tool_calls: Vec::new(),
                     response_items: Vec::new(),
                     provider_name,
-                    model_id,
+                    model_id: model_id.clone(),
+                    requested_model: model_id,
+                    effective_model: None,
+                    cost_usd: None,
+                    attempts: (attempt + 1) as u32,
                     stream_error: Some(error),
                     usage: None,
                 });
@@ -3591,7 +3946,11 @@ impl ProviderManager {
             reasoning_details,
             tool_calls,
             provider_name,
-            model_id,
+            model_id: effective_model.clone().unwrap_or_else(|| model_id.clone()),
+            requested_model: model_id,
+            effective_model,
+            cost_usd: usage.as_ref().and_then(|usage| usage.cost_usd),
+            attempts: (attempt + 1) as u32,
             stream_error: None,
             usage,
         })
@@ -3603,13 +3962,14 @@ fn text_or_empty(s: &str) -> bool {
 }
 
 fn parse_tool_stream<R: std::io::BufRead, F: FnMut(StreamChunk)>(reader: R, mut on_chunk: F)
-    -> Result<(String, String, Option<Value>, Vec<ProviderToolCall>, Option<ProviderTokenUsage>), String> {
+    -> Result<(String, String, Option<Value>, Vec<ProviderToolCall>, Option<ProviderTokenUsage>, Option<String>), String> {
         let mut text = String::new();
         let mut thinking = String::new();
         let mut reasoning_details: Vec<Value> = Vec::new();
         let mut calls: Vec<ProviderToolCall> = Vec::new();
         let mut finish_reason = None;
         let mut usage: Option<ProviderTokenUsage> = None;
+        let mut effective_model: Option<String> = None;
         for line in reader.lines() {
             let line = line.map_err(|error| format!("Interrupted provider stream: {error}"))?;
             let trimmed = line.trim();
@@ -3623,6 +3983,16 @@ fn parse_tool_stream<R: std::io::BufRead, F: FnMut(StreamChunk)>(reader: R, mut 
             let ev: Value = serde_json::from_str(data_str)
                 .map_err(|error| format!("Invalid provider event: {error}"))?;
             if ev.get("error").is_some() { return Err(format!("Provider stream error: {}", ev["error"])); }
+            if effective_model.is_none() {
+                if let Some(model) = ev
+                    .get("model")
+                    .and_then(Value::as_str)
+                    .map(str::trim)
+                    .filter(|model| !model.is_empty() && !model.chars().any(char::is_control))
+                {
+                    effective_model = Some(model.to_string());
+                }
+            }
             if let Some(u) = ev.get("usage").and_then(Value::as_object) {
                 let prompt_total = u.get("prompt_tokens").and_then(Value::as_u64).unwrap_or(0);
                 let completion = u.get("completion_tokens").and_then(Value::as_u64).unwrap_or(0);
@@ -3635,17 +4005,27 @@ fn parse_tool_stream<R: std::io::BufRead, F: FnMut(StreamChunk)>(reader: R, mut 
                             .and_then(Value::as_u64)
                     })
                     .unwrap_or(0);
+                let cache_write = u
+                    .get("prompt_tokens_details")
+                    .and_then(|d| d.get("cache_write_tokens"))
+                    .and_then(Value::as_u64)
+                    .unwrap_or(0);
                 let reasoning_tok = u
                     .get("completion_tokens_details")
                     .and_then(|d| d.get("reasoning_tokens"))
                     .and_then(Value::as_u64)
                     .unwrap_or(0);
+                let cost = u
+                    .get("cost")
+                    .and_then(Value::as_f64)
+                    .filter(|cost| cost.is_finite() && *cost >= 0.0);
                 usage = Some(ProviderTokenUsage {
                     input_tokens: prompt_total.saturating_sub(cache_hit),
                     output_tokens: completion,
                     cache_read_tokens: cache_hit,
-                    cache_write_tokens: 0,
+                    cache_write_tokens: cache_write,
                     reasoning_tokens: reasoning_tok,
+                    cost_usd: cost,
                 });
             }
             if let Some(reason) = ev.pointer("/choices/0/finish_reason").and_then(Value::as_str) {
@@ -3738,7 +4118,7 @@ fn parse_tool_stream<R: std::io::BufRead, F: FnMut(StreamChunk)>(reader: R, mut 
             .collect();
         let details_opt = (!reasoning_details.is_empty()).then_some(Value::Array(reasoning_details));
 
-        Ok((text, thinking, details_opt, tool_calls, usage))
+        Ok((text, thinking, details_opt, tool_calls, usage, effective_model))
 }
 
 #[cfg(test)]
@@ -3965,7 +4345,7 @@ mod tool_stream_regression_tests {
     }
     #[test]
     fn complete_stream_returns_valid_calls() {
-        let (_, _, _, calls, _) = parse_tool_stream(Cursor::new(stream(r#"{"command":"pwd"}"#, Some("tool_calls"))), |_| {}).unwrap();
+        let (_, _, _, calls, _, _) = parse_tool_stream(Cursor::new(stream(r#"{"command":"pwd"}"#, Some("tool_calls"))), |_| {}).unwrap();
         assert_eq!(calls.len(), 1);
     }
     #[test]

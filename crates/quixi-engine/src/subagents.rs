@@ -911,6 +911,7 @@ mod tests {
                     context_window: 128_000,
                     supports_thinking: true,
                     supports_vision: true,
+                    ..Default::default()
                 },
                 ProviderModelInfo {
                     id: "google/gemini-flash-lite".into(),
@@ -918,6 +919,7 @@ mod tests {
                     context_window: 128_000,
                     supports_thinking: true,
                     supports_vision: true,
+                    ..Default::default()
                 },
                 ProviderModelInfo {
                     id: "openai/gpt-mini".into(),
@@ -925,6 +927,7 @@ mod tests {
                     context_window: 128_000,
                     supports_thinking: true,
                     supports_vision: true,
+                    ..Default::default()
                 },
             ];
         }

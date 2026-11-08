@@ -15,6 +15,8 @@ pub mod collaboration;
 pub mod workflows;
 pub mod agent_tools;
 pub mod providers;
+mod openrouter_catalog;
+mod usage_ledger;
 mod local_ui;
 mod storage;
 mod permissions;
@@ -51,6 +53,9 @@ pub(crate) struct TurnRunTelemetry {
     pub rounds_used: usize,
     pub hit_max_rounds: bool,
     pub compactions_count: u32,
+    pub reported_cost_usd: f64,
+    pub estimated_cost_usd: f64,
+    pub effective_model: Option<String>,
 }
 
 pub type EventCallback = Arc<dyn Fn(&str, Value) + Send + Sync>;
@@ -1889,6 +1894,47 @@ impl QuixiEngine {
         if clean_path == "/api/quixi/providers/test" {
             return Self::json_resp(200, &self.provider_manager.test_provider(&body_json));
         }
+        if clean_path == "/api/quixi/providers/openrouter/catalog" {
+            let refresh = path
+                .split_once('?')
+                .map(|(_, query)| {
+                    query.split('&').any(|pair| {
+                        matches!(
+                            pair,
+                            "refresh=1" | "refresh=true" | "refresh=yes"
+                        )
+                    })
+                })
+                .unwrap_or(false);
+            return Self::json_resp(200, &self.provider_manager.openrouter_catalog_state(refresh));
+        }
+        if clean_path == "/api/quixi/providers/openrouter/recommend" {
+            return Self::json_resp(200, &self.provider_manager.openrouter_recommendation(&body_json));
+        }
+        if clean_path == "/api/quixi/providers/usage" {
+            let session_id = path
+                .split_once('?')
+                .and_then(|(_, query)| {
+                    query.split('&').find_map(|pair| {
+                        let (key, value) = pair.split_once('=')?;
+                        (key == "sessionId" || key == "session_id").then(|| value.to_string())
+                    })
+                })
+                .or_else(|| {
+                    body_json
+                        .get("sessionId")
+                        .and_then(Value::as_str)
+                        .map(str::to_string)
+                })
+                .unwrap_or_default();
+            return Self::json_resp(200, &self.provider_manager.usage_snapshot(&session_id));
+        }
+        if clean_path == "/api/quixi/providers/usage/clear" && method == "POST" {
+            if let Some(session_id) = body_json.get("sessionId").and_then(Value::as_str) {
+                self.provider_manager.clear_usage(session_id);
+            }
+            return Self::json_resp(200, &json!({"ok": true}));
+        }
         if clean_path == "/api/quixi/providers/detect-local" {
             let res = self.provider_manager.detect_local_servers();
             self.sync_sessions_to_connected_models();
@@ -2951,6 +2997,9 @@ impl QuixiEngine {
         let mut tool_results = agent_tools::ToolResults::default();
         let mut defer_direct_mcp = false;
         let mut accum_usage = providers::ProviderTokenUsage::default();
+        let mut reported_cost_usd = 0.0f64;
+        let mut estimated_cost_usd = 0.0f64;
+        let mut last_effective_model: Option<String> = None;
         let mut latest_context_tokens = 0u64;
         let mut saw_provider_usage = false;
         let mut rounds_used = 0usize;
@@ -3058,6 +3107,7 @@ impl QuixiEngine {
             }
             if stopped() { return (String::new(), final_model); }
             let mut streamed_text = false;
+            let request_started = std::time::Instant::now();
             let turn = match self.provider_manager.complete_turn_with_tools_for_provider_and_effort(
                 &messages,
                 &tools,
@@ -3109,6 +3159,55 @@ impl QuixiEngine {
                 "agent loop round"
             );
             final_model = turn.model_id.clone();
+            let request_duration_ms = request_started.elapsed().as_millis() as u64;
+            let effective_model = turn
+                .effective_model
+                .clone()
+                .or_else(|| Some(turn.model_id.clone()));
+            let usage_values = turn
+                .usage
+                .as_ref()
+                .map(|u| {
+                    (
+                        u.input_tokens,
+                        u.output_tokens,
+                        u.cache_read_tokens,
+                        u.cache_write_tokens,
+                        u.reasoning_tokens,
+                        u.cost_usd,
+                    )
+                })
+                .unwrap_or((0, 0, 0, 0, 0, None));
+            let reported = turn.cost_usd.or(usage_values.5);
+            let estimated = effective_model.as_deref().and_then(|model| {
+                self.provider_manager.estimate_request_cost(
+                    model,
+                    usage_values.0 + usage_values.2 + usage_values.3,
+                    usage_values.1,
+                )
+            });
+            reported_cost_usd += reported.unwrap_or(0.0);
+            estimated_cost_usd += estimated.unwrap_or(0.0);
+            last_effective_model = effective_model.clone();
+            self.provider_manager.record_request_usage(
+                session_id,
+                crate::usage_ledger::RequestUsage {
+                    provider: turn.provider_name.clone(),
+                    requested_model: turn.requested_model.clone(),
+                    effective_model,
+                    input_tokens: usage_values.0,
+                    output_tokens: usage_values.1,
+                    cache_read_tokens: usage_values.2,
+                    cache_write_tokens: usage_values.3,
+                    reasoning_tokens: usage_values.4,
+                    reported_cost_usd: reported,
+                    estimated_cost_usd: estimated,
+                    duration_ms: request_duration_ms,
+                    attempts: turn.attempts.max(1),
+                    error: turn.stream_error.clone(),
+                    timestamp_ms: Utc::now().timestamp_millis() as u64,
+                },
+            );
             if let Some(ref u) = turn.usage {
                 saw_provider_usage = true;
                 // Accumulate true cumulative billing tokens across every round in the turn,
@@ -3574,6 +3673,7 @@ impl QuixiEngine {
                     cache_read_tokens: 0,
                     cache_write_tokens: 0,
                     reasoning_tokens: 0,
+                    cost_usd: None,
                 }
             };
             let proj = if latest_context_tokens > 0 {
@@ -3601,6 +3701,9 @@ impl QuixiEngine {
                     rounds_used,
                     hit_max_rounds,
                     compactions_count,
+                    reported_cost_usd,
+                    estimated_cost_usd,
+                    effective_model: last_effective_model,
                 },
             );
         }
@@ -4084,6 +4187,8 @@ impl QuixiEngine {
                 "cache_read_input_tokens": turn_usage.cache_read_tokens,
                 "cache_creation_input_tokens": turn_usage.cache_write_tokens,
                 "reasoning_tokens": turn_usage.reasoning_tokens,
+                "reported_cost_usd": telemetry.reported_cost_usd,
+                "estimated_cost_usd": telemetry.estimated_cost_usd,
             });
             let assistant_msg = json!({
                 "type": "assistant",
@@ -4114,7 +4219,9 @@ impl QuixiEngine {
                 "latest_context_tokens": telemetry.latest_context_tokens,
                 "result": reply,
                 "session_id": sid,
-                "total_cost_usd": 0.0,
+                "total_cost_usd": telemetry.reported_cost_usd,
+                "estimated_cost_usd": telemetry.estimated_cost_usd,
+                "effective_model": telemetry.effective_model,
                 "usage": usage_json,
                 "uuid": Uuid::new_v4().to_string()
             });
@@ -4621,6 +4728,8 @@ impl QuixiEngine {
                 "cache_read_input_tokens": turn_usage.cache_read_tokens,
                 "cache_creation_input_tokens": turn_usage.cache_write_tokens,
                 "reasoning_tokens": turn_usage.reasoning_tokens,
+                "reported_cost_usd": telemetry.reported_cost_usd,
+                "estimated_cost_usd": telemetry.estimated_cost_usd,
             });
             let assistant_msg = json!({
                 "type": "assistant",
@@ -4651,7 +4760,9 @@ impl QuixiEngine {
                 "latest_context_tokens": telemetry.latest_context_tokens,
                 "result": reply,
                 "session_id": sid,
-                "total_cost_usd": 0.0,
+                "total_cost_usd": telemetry.reported_cost_usd,
+                "estimated_cost_usd": telemetry.estimated_cost_usd,
+                "effective_model": telemetry.effective_model,
                 "usage": usage_json,
                 "uuid": Uuid::new_v4().to_string()
             });
