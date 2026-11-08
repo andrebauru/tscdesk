@@ -1,4 +1,4 @@
-# Instalador local do TSCDesk para Windows 11, sem exigir privilégios de administrador.
+# Instalador local do TSCDesk para Windows 11, sem exigir privilegios de administrador.
 [CmdletBinding()]
 param(
     [string]$Destino = (Join-Path $env:LOCALAPPDATA 'Programs\TSCDesk'),
@@ -25,26 +25,30 @@ $executaveis = @(
     'quixi-mcp-worker.exe'
 )
 
-# Encerra a instalação com uma mensagem objetiva e código de erro.
+# Encerra a instalacao com uma mensagem objetiva e codigo de erro.
 function Parar-Instalacao {
     param([Parameter(Mandatory)][string]$Mensagem)
 
-    throw "TSCDesk: $Mensagem"
+    Write-Host "TSCDesk: $Mensagem" -ForegroundColor Red
+    exit 1
 }
 
-# Confirma que o comando necessário está disponível no PowerShell atual.
-function Exigir-Comando {
-    param(
-        [Parameter(Mandatory)][string]$Nome,
-        [Parameter(Mandatory)][string]$Orientacao
-    )
-
-    if (-not (Get-Command $Nome -ErrorAction SilentlyContinue)) {
-        Parar-Instalacao "$Nome não foi encontrado. $Orientacao"
+# Localiza o Cargo no PATH ou na pasta padrao criada pelo rustup.
+function Resolver-Cargo {
+    $comando = Get-Command 'cargo' -ErrorAction SilentlyContinue
+    if ($comando) {
+        return $comando.Source
     }
+
+    $cargoRustup = Join-Path $env:USERPROFILE '.cargo\bin\cargo.exe'
+    if (Test-Path -LiteralPath $cargoRustup -PathType Leaf) {
+        return $cargoRustup
+    }
+
+    Parar-Instalacao 'cargo nao foi encontrado. Instale o Rust MSVC em https://rustup.rs, conclua a instalacao e execute este script novamente.'
 }
 
-# Cria um atalho do Windows para o executável instalado.
+# Cria um atalho do Windows para o executavel instalado.
 function Criar-Atalho {
     param(
         [Parameter(Mandatory)][string]$Caminho,
@@ -63,7 +67,7 @@ function Criar-Atalho {
 }
 
 if (-not (Test-Path -LiteralPath $manifesto -PathType Leaf)) {
-    Parar-Instalacao 'execute este script a partir da cópia completa do projeto.'
+    Parar-Instalacao 'execute este script a partir da copia completa do projeto.'
 }
 
 if ([Environment]::OSVersion.Version.Build -lt 22000) {
@@ -71,26 +75,26 @@ if ([Environment]::OSVersion.Version.Build -lt 22000) {
 }
 
 if (-not $PularCompilacao) {
-    Exigir-Comando 'cargo' 'Instale Rust MSVC em https://rustup.rs e abra um novo PowerShell.'
+    $cargo = Resolver-Cargo
     Write-Host '[1/4] Compilando o TSCDesk em modo release...'
-    & cargo build --locked --release --workspace --manifest-path $manifesto
+    & $cargo build --locked --release --workspace --manifest-path $manifesto
     if ($LASTEXITCODE -ne 0) {
-        Parar-Instalacao "a compilação falhou com o código $LASTEXITCODE."
+        Parar-Instalacao "a compilacao falhou com o codigo $LASTEXITCODE."
     }
 }
 else {
-    Write-Host '[1/4] Usando os executáveis já compilados...'
+    Write-Host '[1/4] Usando os executaveis ja compilados...'
 }
 
 $executavelPrincipal = Join-Path $diretorioRelease 'QuixiDesk.exe'
 if (-not (Test-Path -LiteralPath $executavelPrincipal -PathType Leaf)) {
-    Parar-Instalacao "QuixiDesk.exe não existe em '$diretorioRelease'. Execute novamente sem -PularCompilacao."
+    Parar-Instalacao "QuixiDesk.exe nao existe em '$diretorioRelease'. Execute novamente sem -PularCompilacao."
 }
 
 $destinoCompleto = [IO.Path]::GetFullPath($Destino)
 $marcadorDestino = Join-Path $destinoCompleto $marcadorGerenciado
 if ((Test-Path -LiteralPath $destinoCompleto) -and -not (Test-Path -LiteralPath $marcadorDestino -PathType Leaf)) {
-    Parar-Instalacao "o destino '$destinoCompleto' já existe e não pertence a este instalador. Escolha outro com -Destino."
+    Parar-Instalacao "o destino '$destinoCompleto' ja existe e nao pertence a este instalador. Escolha outro com -Destino."
 }
 
 $pastaTemporaria = Join-Path ([IO.Path]::GetTempPath()) ('tscdesk-install-' + [guid]::NewGuid().ToString('N'))
@@ -98,7 +102,7 @@ $conteudoTemporario = Join-Path $pastaTemporaria 'TSCDesk'
 $backup = "$destinoCompleto.backup"
 
 if (Test-Path -LiteralPath $backup) {
-    Parar-Instalacao "o backup '$backup' já existe. Preserve ou remova essa pasta antes de tentar novamente."
+    Parar-Instalacao "o backup '$backup' ja existe. Preserve ou remova essa pasta antes de tentar novamente."
 }
 
 try {
@@ -112,16 +116,16 @@ try {
             Copy-Item -LiteralPath $origem -Destination (Join-Path $conteudoTemporario $nome)
         }
         elseif ($nome -eq 'quixi-mcp-worker.exe') {
-            Parar-Instalacao "o auxiliar obrigatório '$nome' não foi gerado."
+            Parar-Instalacao "o auxiliar obrigatorio '$nome' nao foi gerado."
         }
         else {
-            Write-Warning "Auxiliar opcional não encontrado: $nome"
+            Write-Warning "Auxiliar opcional nao encontrado: $nome"
         }
     }
 
     Set-Content -LiteralPath (Join-Path $conteudoTemporario $marcadorGerenciado) -Value 'Gerenciado por instalar-windows.ps1' -Encoding UTF8
 
-    Write-Host '[3/4] Instalando no perfil do usuário...'
+    Write-Host '[3/4] Instalando no perfil do usuario...'
     if (Test-Path -LiteralPath $destinoCompleto) {
         Move-Item -LiteralPath $destinoCompleto -Destination $backup
     }
