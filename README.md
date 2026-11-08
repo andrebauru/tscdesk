@@ -283,7 +283,36 @@ O setup documentado usa macOS 14+. Captura de tela, acessibilidade e AppleScript
 
 ### Windows
 
-Use Rust MSVC, Visual Studio C++ Build Tools com Windows SDK e WebView2 Evergreen. Em PowerShell:
+Use Windows 11 com Rust MSVC, Visual Studio C++ Build Tools com Windows SDK e WebView2 Evergreen.
+
+#### Instalação fácil
+
+Abra a pasta do projeto no Explorador de Arquivos, clique com o botão direito em uma área vazia e escolha **Abrir no Terminal**. Depois execute:
+
+```powershell
+powershell -ExecutionPolicy Bypass -File .\instalar-windows.ps1
+```
+
+O script compila a versão release, instala o aplicativo somente para o usuário atual em `%LOCALAPPDATA%\Programs\TSCDesk` e cria atalhos no Desktop e no menu Iniciar. Não é necessário executar o terminal como administrador.
+
+Para instalar e abrir imediatamente:
+
+```powershell
+powershell -ExecutionPolicy Bypass -File .\instalar-windows.ps1 -AbrirAoFinal
+```
+
+Opções úteis:
+
+- `-PularCompilacao`: reutiliza uma compilação release já existente.
+- `-SemAtalhoDesktop`: não cria o atalho no Desktop.
+- `-SemAtalhoMenuIniciar`: não cria o atalho no menu Iniciar.
+- `-Destino "C:\Apps\TSCDesk"`: escolhe outra pasta de instalação.
+
+Se o PowerShell informar que `cargo` não foi encontrado, instale o Rust MSVC pelo [rustup](https://rustup.rs), instale o workload **Desenvolvimento para Desktop com C++** do Visual Studio Build Tools e abra um novo terminal. O WebView2 já acompanha o Windows 11 atualizado.
+
+#### Compilação manual
+
+Em PowerShell:
 
 ```powershell
 cargo build --locked --release --workspace
