@@ -13,8 +13,9 @@ Uso: bash iniciar-chromeos.sh [opções] [-- argumentos do aplicativo]
   --skip-build    Instalar os binários existentes em target/release.
   --check         Diagnóstico da instalação existente, sem instalar/abrir.
 
-Execute no Terminal Linux do Chromebook, como seu usuário normal.
+Execute no Terminal Linux do Chromebook (contêiner Crostini `penguin`), como seu usuário normal.
 Na primeira execução utiliza scripts/install-linux.sh e pede consentimento.
+Em um Crostini novo, instala Python, compiladores, GTK/WebKit e Rust stable.
 Nas seguintes abre a instalação existente sem recompilar.
 Não configura início no login nem faz inferências ou aquecimento de GPU.
 EOF
@@ -26,7 +27,7 @@ for arg in "$@"; do
         --help|-h) usage; exit 0 ;;
     esac
 done
-[[ "$(uname -s)" == Linux ]] || fail 'Execute no ambiente Linux do ChromeOS (Crostini).'
+[[ "$(uname -s)" == Linux ]] || fail 'Execute no Terminal Linux do ChromeOS (contêiner Crostini penguin).'
 (( EUID != 0 )) || fail 'Não execute como root/sudo; apenas o instalador usa sudo para APT.'
 INSTALL=0 CHECK=0 JOBS=1
 OPTIONS=()
@@ -43,7 +44,7 @@ while (( $# )); do
 done
 [[ "$JOBS" =~ ^[1-9][0-9]*$ ]] || fail '--jobs deve ser um inteiro positivo.'
 (( ! CHECK || ! INSTALL )) || fail '--check não pode ser usado com --instalar.'
-[[ -n "${DISPLAY:-}" || -n "${WAYLAND_DISPLAY:-}" ]] || fail 'Sessão gráfica ausente. Abra o Terminal Linux do Chromebook.'
+[[ -n "${DISPLAY:-}" || -n "${WAYLAND_DISPLAY:-}" ]] || fail 'Sessão gráfica ausente. Abra o Terminal Linux do contêiner penguin no Chromebook.'
 PREFIX="$HOME/.local/opt/tscdesk"
 LAUNCHER="$HOME/.local/bin/tscdesk"
 if (( CHECK )); then

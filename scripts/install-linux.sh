@@ -55,8 +55,6 @@ case "${ID:-}:${VERSION_ID:-}" in
     *) fail 'Requires Debian 12+ or Ubuntu 22.04+.' ;;
 esac
 dpkg --compare-versions "$VERSION_ID" ge "$MIN_VERSION" || fail "Requires $ID $MIN_VERSION or newer."
-command -v python3 >/dev/null 2>&1 || fail 'Install python3 first (sudo apt-get install python3), then rerun.'
-
 # Preflight and publishing share the same validator, including ancestor symlinks.
 # No source-root environment override: tests copy these scripts into a fixture tree.
 manage_install() {
@@ -213,7 +211,6 @@ except (OSError, ValueError, RuntimeError) as exc:
     sys.exit(1)
 PY
 }
-manage_install preflight
 confirm() {
     local answer
     printf 'install-linux: %s\n' "$1" >&2
@@ -222,13 +219,26 @@ confirm() {
     read -r -p 'Continue? [y/N] ' answer
     [[ "$answer" == y || "$answer" == Y || "$answer" == yes ]] || fail 'Cancelled.'
 }
-if (( ! SKIP_DEPS )); then
+install_dependencies() {
     command -v sudo >/dev/null 2>&1 || fail 'sudo is required for apt (or use --skip-deps).'
     confirm 'Will use sudo apt-get update/install for system dependencies. No input permission or sandbox changes.'
     sudo apt-get update
     sudo apt-get install --no-install-recommends -y build-essential pkg-config libgtk-3-dev \
         libwebkit2gtk-4.1-dev curl git ca-certificates perl python3 dbus-user-session \
         gnome-keyring zenity libsecret-tools xdg-utils
+}
+DEPS_INSTALLED=0
+if ! command -v python3 >/dev/null 2>&1; then
+    (( ! SKIP_DEPS )) || fail 'python3 is required; rerun without --skip-deps so it can be installed.'
+    # A pristine Crostini image may not have Python. Install the complete dependency
+    # set first, then run the same path-safety preflight used on configured systems.
+    install_dependencies
+    DEPS_INSTALLED=1
+fi
+command -v python3 >/dev/null 2>&1 || fail 'python3 is still unavailable after dependency installation.'
+manage_install preflight
+if (( ! SKIP_DEPS && ! DEPS_INSTALLED )); then
+    install_dependencies
 fi
 TEMP_STAGE="$(mktemp -d)"
 trap 'rm -rf -- "$TEMP_STAGE"' EXIT

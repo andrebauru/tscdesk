@@ -115,7 +115,9 @@ bash iniciar-chromeos.sh --instalar
 bash iniciar-chromeos.sh --check
 ```
 
-O script não configura início no login do ChromeOS e não cria tarefas de aquecimento de GPU. Uma primeira instalação pode levar bastante tempo; somente depois dela a janela abre. Leia os scripts antes de executá-los. Para apenas instalar, sem abrir:
+Execute esses comandos no Terminal Linux do ChromeOS, normalmente conectado ao contêiner Crostini chamado `penguin`. O nome não é imposto pelo script, portanto contêineres renomeados também funcionam.
+
+O script não configura início no login do ChromeOS e não cria tarefas de aquecimento de GPU. Em um Crostini novo, a primeira execução instala inclusive Python, compiladores, GTK/WebKit e Rust; pode levar bastante tempo e somente depois dela a janela abre. Leia os scripts antes de executá-los. Para apenas instalar, sem abrir:
 
 ```bash
 bash scripts/install-linux.sh --help
@@ -293,7 +295,7 @@ Abra a pasta do projeto no Explorador de Arquivos, clique com o botão direito e
 powershell -ExecutionPolicy Bypass -File .\instalar-windows.ps1
 ```
 
-O script compila a versão release, instala o aplicativo somente para o usuário atual em `%LOCALAPPDATA%\Programs\TSCDesk` e cria atalhos no Desktop e no menu Iniciar. Não é necessário executar o terminal como administrador.
+O script detecta uma instalação nova, pede consentimento e instala somente os pré-requisitos ausentes por canais oficiais: Rustup/Rust stable, Microsoft Visual Studio Build Tools com C++/Windows SDK e WebView2 Evergreen. O Build Tools pode solicitar elevação UAC e ocupar vários gigabytes. Depois, compila a versão release, instala o aplicativo somente para o usuário atual em `%LOCALAPPDATA%\Programs\TSCDesk` e cria atalhos no Desktop e no menu Iniciar.
 
 Para instalar e abrir imediatamente:
 
@@ -303,12 +305,21 @@ powershell -ExecutionPolicy Bypass -File .\instalar-windows.ps1 -AbrirAoFinal
 
 Opções úteis:
 
+- `-Yes`: aceita previamente a instalação das dependências detectadas; use após revisar o script.
+- `-Diagnostico`: apenas informa o estado de Rust, MSVC/Windows SDK e WebView2.
+- `-PularDependencias`: não instala dependências; falha claramente se alguma necessária estiver ausente.
 - `-PularCompilacao`: reutiliza uma compilação release já existente.
 - `-SemAtalhoDesktop`: não cria o atalho no Desktop.
 - `-SemAtalhoMenuIniciar`: não cria o atalho no menu Iniciar.
 - `-Destino "C:\Apps\TSCDesk"`: escolhe outra pasta de instalação.
 
-Se o PowerShell informar que `cargo` não foi encontrado, instale o Rust MSVC pelo [rustup](https://rustup.rs), instale o workload **Desenvolvimento para Desktop com C++** do Visual Studio Build Tools e abra um novo terminal. O WebView2 já acompanha o Windows 11 atualizado.
+Para verificar um computador antes de instalar:
+
+```powershell
+powershell -ExecutionPolicy Bypass -File .\instalar-windows.ps1 -Diagnostico
+```
+
+O Windows deve ter conexão com a internet e `winget` (App Installer). O script não desativa Smart App Control nem outras proteções do Windows. Se uma política corporativa bloquear executáveis Rust não assinados, a configuração precisa ser tratada pelo administrador da máquina.
 
 #### Compilação manual
 
