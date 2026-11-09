@@ -76,6 +76,7 @@ Path(os.environ['CAPTURE']).write_text(json.dumps({'args': sys.argv[1:], 'env': 
                      "XDG_RUNTIME_DIR"):
             self.env.pop(name, None)
         self.env.update(HOME=str(self.home), XDG_DATA_HOME=str(self.home / "xdg data"),
+                        SHELL="/bin/bash",
                         PATH=str(self.bin) + ":" + os.environ["PATH"], CAPTURE=str(self.capture),
                         FORBIDDEN=str(self.forbidden), DBUS_LOG=str(self.dbus_log),
                         TMPDIR=str(self.root))
@@ -142,6 +143,44 @@ exec "$@"
             self.assertTrue((self.prefix / "current/bin" / name).is_file())
         shutil.rmtree(self.source)
         self.launch("from detached install", DISPLAY=":0", DBUS_SESSION_BUS_ADDRESS="fixture:existing")
+
+    def test_explicit_reinstall_replaces_only_managed_releases_and_keeps_account_data(self):
+        self.install()
+        old = self.prefix / os.readlink(self.prefix / "current")
+        (old / "old-release-only").write_text("remove with managed release")
+        self.install("--reinstall")
+        current = (self.prefix / "current").resolve()
+        self.assertNotEqual(old, current)
+        self.assertFalse(old.exists())
+        self.assertTrue((current / ".tscdesk-release").is_file())
+        self.assertEqual((self.home / ".quixi/data").read_text(), "keep me")
+        self.assertEqual((self.home / ".gemini/mcp.json").read_text(), "keep MCP")
+
+    def test_explicit_reinstall_stops_only_processes_from_managed_release(self):
+        self.install()
+        old = self.prefix / os.readlink(self.prefix / "current")
+        sleeper = old / "bin/managed-sleeper"
+        shutil.copy2(shutil.which("bash"), sleeper)
+        process = subprocess.Popen([str(sleeper), "-c", "sleep 30 & wait"])
+        try:
+            self.assertIsNone(process.poll())
+            self.install("--reinstall")
+            process.wait(timeout=2)
+            self.assertIsNotNone(process.returncode)
+        finally:
+            if process.poll() is None:
+                process.kill()
+                process.wait()
+
+    def test_path_configuration_is_idempotent(self):
+        first = self.install()
+        second = self.install()
+        line = 'export PATH="$HOME/.local/bin:$PATH"'
+        bashrc = self.home / ".bashrc"
+        self.assertEqual(bashrc.read_text().splitlines().count(line), 1)
+        self.assertIn("added ~/.local/bin", first.stdout)
+        self.assertIn("already configured", second.stdout)
+        self.assertIn("source", second.stdout)
 
     def test_foreign_launcher_conflict_before_install(self):
         self.launcher.parent.mkdir(parents=True)

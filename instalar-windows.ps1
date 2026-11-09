@@ -8,6 +8,7 @@ param(
     [switch]$SemAtalhoDesktop,
     [switch]$SemAtalhoMenuIniciar,
     [switch]$AbrirAoFinal,
+    [switch]$NaoAbrirAoFinal,
     [switch]$Diagnostico
 )
 
@@ -207,12 +208,30 @@ function Criar-Atalho {
     $atalho.Save()
 }
 
+# Decide se a primeira instalacao deve abrir o aplicativo.
+function Confirmar-PrimeiraAbertura {
+    param([Parameter(Mandatory)][bool]$PrimeiraInstalacao)
+
+    if ($AbrirAoFinal) {
+        return $true
+    }
+    if ($NaoAbrirAoFinal -or -not $PrimeiraInstalacao -or [Console]::IsInputRedirected) {
+        return $false
+    }
+
+    $resposta = Read-Host 'Deseja abrir o TSCDesk agora? [s/N]'
+    return $resposta -in @('s', 'S', 'sim', 'SIM', 'Sim')
+}
+
 if (-not (Test-Path -LiteralPath $manifesto -PathType Leaf)) {
     Parar-Instalacao 'execute este script a partir da copia completa do projeto.'
 }
 
 if ([Environment]::OSVersion.Version.Build -lt 22000) {
     Parar-Instalacao 'este instalador requer Windows 11.'
+}
+if ($AbrirAoFinal -and $NaoAbrirAoFinal) {
+    Parar-Instalacao 'use apenas uma opcao: -AbrirAoFinal ou -NaoAbrirAoFinal.'
 }
 
 $precisaCargo = -not (Obter-Comando 'cargo') -and -not (Test-Path -LiteralPath (Join-Path $env:USERPROFILE '.cargo\bin\cargo.exe') -PathType Leaf)
@@ -254,6 +273,7 @@ elseif ($precisaCargoParaBuild -or $precisaMsvcParaBuild -or $precisaWebView2) {
 
 if (-not $PularCompilacao) {
     $cargo = Resolver-Cargo
+    Write-Host 'Observacao: linhas iniciadas por warning sao avisos do compilador, nao falhas.'
     Write-Host '[1/4] Compilando o TSCDesk em modo release...'
     & $cargo build --locked --release --workspace --manifest-path $manifesto
     if ($LASTEXITCODE -ne 0) {
@@ -271,6 +291,7 @@ if (-not (Test-Path -LiteralPath $executavelPrincipal -PathType Leaf)) {
 
 $destinoCompleto = [IO.Path]::GetFullPath($Destino)
 $marcadorDestino = Join-Path $destinoCompleto $marcadorGerenciado
+$primeiraInstalacao = -not (Test-Path -LiteralPath $destinoCompleto)
 if ((Test-Path -LiteralPath $destinoCompleto) -and -not (Test-Path -LiteralPath $marcadorDestino -PathType Leaf)) {
     Parar-Instalacao "o destino '$destinoCompleto' ja existe e nao pertence a este instalador. Escolha outro com -Destino."
 }
@@ -327,16 +348,29 @@ try {
     $executavelInstalado = Join-Path $destinoCompleto 'QuixiDesk.exe'
     if (-not $SemAtalhoMenuIniciar) {
         $menuIniciar = Join-Path ([Environment]::GetFolderPath('Programs')) 'TSCDesk\TSCDesk.lnk'
-        Criar-Atalho -Caminho $menuIniciar -Executavel $executavelInstalado -DiretorioTrabalho $destinoCompleto
+        try {
+            Criar-Atalho -Caminho $menuIniciar -Executavel $executavelInstalado -DiretorioTrabalho $destinoCompleto
+        }
+        catch {
+            Write-Warning "O aplicativo foi instalado, mas o atalho do menu Iniciar falhou: $($_.Exception.Message)"
+        }
     }
     if (-not $SemAtalhoDesktop) {
         $desktop = Join-Path ([Environment]::GetFolderPath('Desktop')) 'TSCDesk.lnk'
-        Criar-Atalho -Caminho $desktop -Executavel $executavelInstalado -DiretorioTrabalho $destinoCompleto
+        try {
+            Criar-Atalho -Caminho $desktop -Executavel $executavelInstalado -DiretorioTrabalho $destinoCompleto
+        }
+        catch {
+            Write-Warning "O aplicativo foi instalado, mas o atalho do Desktop falhou: $($_.Exception.Message)"
+        }
     }
 
     Write-Host "TSCDesk instalado com sucesso em: $destinoCompleto" -ForegroundColor Green
-    if ($AbrirAoFinal) {
+    if (Confirmar-PrimeiraAbertura -PrimeiraInstalacao $primeiraInstalacao) {
         Start-Process -FilePath $executavelInstalado -WorkingDirectory $destinoCompleto
+    }
+    else {
+        Write-Host 'O TSCDesk nao foi aberto. Use o atalho quando desejar.'
     }
 }
 finally {

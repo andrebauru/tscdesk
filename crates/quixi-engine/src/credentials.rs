@@ -8,6 +8,20 @@ use serde_json::{json, Value};
 use sha2::{Digest, Sha256};
 use std::{fs, path::Path};
 
+/// Explains how to recover secure storage without weakening credential protection.
+fn credential_store_error(detail: &str) -> String {
+    #[cfg(target_os = "linux")]
+    {
+        return format!(
+            "Linux Secret Service could not persist the credential. It remains available only for this session. On Debian/ChromeOS Linux, open Passwords and Keys (seahorse), create or unlock the Login keyring, ensure `gnome-keyring-daemon --start --components=secrets` runs in the same D-Bus session, then restart TSCDesk and save again. No plaintext fallback was written. Detail: {detail}"
+        );
+    }
+    #[cfg(not(target_os = "linux"))]
+    {
+        format!("Unlock your system credential store and try again: {detail}")
+    }
+}
+
 fn key(path: &Path, create: bool) -> Result<Vec<u8>, String> {
     // Disposable test profiles never read or change the real account's vault.
     if cfg!(test) || quixi_proto::paths::test_profile().is_some() {
@@ -24,8 +38,8 @@ fn key(path: &Path, create: bool) -> Result<Vec<u8>, String> {
         return Ok(k);
     }
     let identity = format!("{:x}", Sha256::digest(path.to_string_lossy().as_bytes()));
-    let entry =
-        keyring::Entry::new("QuixiDesk credentials", &identity).map_err(|e| e.to_string())?;
+    let entry = keyring::Entry::new("QuixiDesk credentials", &identity)
+        .map_err(|e| credential_store_error(&e.to_string()))?;
     match entry.get_password() {
         Ok(s) => STANDARD.decode(s).map_err(|e| e.to_string()),
         Err(keyring::Error::NoEntry) if create => {
@@ -33,12 +47,10 @@ fn key(path: &Path, create: bool) -> Result<Vec<u8>, String> {
             OsRng.fill_bytes(&mut k);
             entry
                 .set_password(&STANDARD.encode(&k))
-                .map_err(|e| e.to_string())?;
+                .map_err(|e| credential_store_error(&e.to_string()))?;
             Ok(k)
         }
-        Err(e) => Err(format!(
-            "Unlock your system credential store and try again: {e}"
-        )),
+        Err(e) => Err(credential_store_error(&e.to_string())),
     }
 }
 pub(crate) fn seal(path: &Path, mut document: Value) -> Result<Value, String> {
@@ -122,5 +134,15 @@ mod tests {
         damaged["encryptedCredentials"]["ciphertext"] = json!(STANDARD.encode([0; 32]));
         assert!(open(&path, damaged).is_err());
         fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn linux_vault_error_is_actionable_without_offering_plaintext() {
+        let message = credential_store_error("Secret Service: no result found");
+        assert!(message.contains("seahorse"));
+        assert!(message.contains("gnome-keyring-daemon"));
+        assert!(message.contains("only for this session"));
+        assert!(message.contains("No plaintext fallback was written"));
     }
 }

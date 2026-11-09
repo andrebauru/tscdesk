@@ -8,14 +8,16 @@ Usage: scripts/install-linux.sh [options]
   --help, -h       Show this help (also permitted as root)
   --skip-deps      Do not run apt; dependencies must already be installed
   --skip-build     Package existing target/release binaries; do not run Rust
+  --reinstall      Replace prior managed releases after the new release is ready
   --jobs N         Cargo jobs (default: CARGO_BUILD_JOBS, otherwise 2)
   --prefix PATH    Absolute user-owned install path (default: ~/.local/opt/tscdesk)
   --yes            Consent to sudo apt and Rust stable installation/update
 
 Supports x86_64 and aarch64; ARM support is not a claim of ARM testing.
 Installs versioned releases, ~/.local/bin/tscdesk and an XDG desktop entry.
-Existing paths must carry this installer's managed marker. Old releases and
-~/.quixi/MCP configuration are never removed or overwritten. Optional bubblewrap
+Existing paths must carry this installer's managed marker. Normal updates keep old
+releases; --reinstall removes only prior managed releases after a successful switch.
+~/.quixi/MCP configuration is never removed or overwritten. Optional bubblewrap
 is not installed automatically; WebKit sandbox and input permissions are unchanged.
 EOF
 }
@@ -25,13 +27,14 @@ for arg in "$@"; do
 done
 fail() { printf 'install-linux: %s\n' "$*" >&2; exit 1; }
 (( EUID != 0 )) || fail 'Run as your desktop user, not root (sudo is used only for apt).'
-SKIP_DEPS=0 SKIP_BUILD=0 YES=0
+SKIP_DEPS=0 SKIP_BUILD=0 YES=0 REINSTALL=0
 JOBS="${CARGO_BUILD_JOBS:-2}"
 PREFIX="$HOME/.local/opt/tscdesk"
 while (( $# )); do
     case "$1" in
         --skip-deps) SKIP_DEPS=1; shift ;;
         --skip-build) SKIP_BUILD=1; shift ;;
+        --reinstall) REINSTALL=1; shift ;;
         --yes) YES=1; shift ;;
         --jobs|--prefix)
             (( $# >= 2 )) || fail "Missing value for $1"
@@ -67,8 +70,10 @@ from pathlib import Path
 import re
 import shlex
 import shutil
+import signal
 import sys
 import tempfile
+import time
 
 mode, raw_prefix, source, stage = sys.argv[1:]
 MARK = 'TSCDesk Linux installer managed v1\n'
@@ -144,11 +149,76 @@ def atomic_file(path, data, perms):
         if os.path.lexists(name):
             os.unlink(name)
 
+def stop_managed_processes():
+    """Stops only this user's executables running from managed release folders."""
+    releases = prefix / 'releases'
+    if not releases.is_dir():
+        return
+    parents = {}
+    roots = set()
+    for proc in Path('/proc').iterdir():
+        if not proc.name.isdigit():
+            continue
+        try:
+            if proc.stat().st_uid != os.getuid():
+                continue
+            pid = int(proc.name)
+            fields = (proc / 'stat').read_text().rsplit(')', 1)[1].split()
+            parents[pid] = int(fields[1])
+            executable = (proc / 'exe').resolve(strict=True)
+            if releases in executable.parents:
+                roots.add(pid)
+        except (FileNotFoundError, PermissionError, ProcessLookupError, OSError):
+            continue
+    targets = set(roots)
+    changed = True
+    while changed:
+        before = len(targets)
+        targets.update(pid for pid, parent in parents.items() if parent in targets)
+        changed = len(targets) != before
+    for pid in targets:
+        try:
+            os.kill(pid, signal.SIGTERM)
+        except ProcessLookupError:
+            pass
+    def still_running(pid):
+        try:
+            fields = Path('/proc', str(pid), 'stat').read_text().rsplit(')', 1)[1].split()
+            return fields[0] != 'Z'
+        except (FileNotFoundError, PermissionError, OSError):
+            return False
+    deadline = time.monotonic() + 5
+    remaining = list(targets)
+    while remaining and time.monotonic() < deadline:
+        remaining = [pid for pid in remaining if still_running(pid)]
+        if remaining:
+            time.sleep(0.1)
+    for pid in remaining:
+        try:
+            os.kill(pid, signal.SIGKILL)
+        except ProcessLookupError:
+            pass
+
+def remove_old_managed_releases(current):
+    """Removes prior releases only when their installer marker is intact."""
+    releases = prefix / 'releases'
+    for old in releases.iterdir():
+        if old == current or old.is_symlink() or not old.is_dir():
+            continue
+        if marker(old / '.tscdesk-release'):
+            try:
+                shutil.rmtree(old)
+            except OSError as exc:
+                print('install-linux: warning: active release was installed, but the old managed release '
+                      f'{old} could not be removed: {exc}', file=sys.stderr)
+
 try:
     validate()
     if mode == 'preflight':
         sys.exit(0)
     # All artifacts are prepared before creating or modifying installed files.
+    if mode not in ('publish', 'reinstall'):
+        fail('Unknown installation mode')
     staged = Path(stage)
     icon = next((name for name in ('quixi-logo.svg', 'quixi-mark.svg')
                  if (staged / 'resources' / name).is_file()), None)
@@ -189,6 +259,8 @@ try:
                     for p in (launcher, desktop)}
         link = prefix / ('.current-' + release.name)
         try:
+            if mode == 'reinstall':
+                stop_managed_processes()
             atomic_file(launcher, wrapper, 0o755)
             atomic_file(desktop, entry, 0o644)
             os.symlink('releases/' + release.name, link)
@@ -204,6 +276,8 @@ try:
         finally:
             if link.is_symlink():
                 link.unlink()
+        if mode == 'reinstall':
+            remove_old_managed_releases(release)
     print('Installed TSCDesk at ' + str(prefix))
     print('Launch: ' + str(launcher) + ' (add ~/.local/bin to PATH if necessary)')
 except (OSError, ValueError, RuntimeError) as exc:
@@ -226,6 +300,38 @@ install_dependencies() {
     sudo apt-get install --no-install-recommends -y build-essential pkg-config libgtk-3-dev \
         libwebkit2gtk-4.1-dev curl git ca-certificates perl python3 dbus-user-session \
         gnome-keyring zenity libsecret-tools xdg-utils
+}
+
+# Adds one controlled PATH line without replacing shell configuration.
+configure_user_path() {
+    local shell_name config line
+    shell_name="$(basename -- "${SHELL:-bash}")"
+    case "$shell_name" in
+        bash) config="$HOME/.bashrc" ;;
+        zsh) config="$HOME/.zshrc" ;;
+        *) config="$HOME/.profile" ;;
+    esac
+    line='export PATH="$HOME/.local/bin:$PATH"'
+    if [[ -L "$config" ]]; then
+        printf 'install-linux: warning: PATH was not changed because %s is a symlink.\n' "$config" >&2
+        return
+    fi
+    if [[ -e "$config" && ! -f "$config" ]]; then
+        printf 'install-linux: warning: PATH was not changed because %s is not a regular file.\n' "$config" >&2
+        return
+    fi
+    if [[ -e "$config" && "$(stat -c %u -- "$config")" != "$EUID" ]]; then
+        printf 'install-linux: warning: PATH was not changed because %s belongs to another user.\n' "$config" >&2
+        return
+    fi
+    if [[ ! -f "$config" ]] || ! grep -Fqx -- "$line" "$config"; then
+        echo "$line" >> "$config"
+        printf 'install-linux: added ~/.local/bin to PATH in %s\n' "$config"
+    else
+        printf 'install-linux: PATH is already configured in %s\n' "$config"
+    fi
+    export PATH="$HOME/.local/bin:$PATH"
+    printf 'install-linux: open a new Terminal or run: source %q\n' "$config"
 }
 DEPS_INSTALLED=0
 if ! command -v python3 >/dev/null 2>&1; then
@@ -275,4 +381,9 @@ cp -RL -- "$SOURCE_ROOT/resources" "$TEMP_STAGE/payload/resources"
 for license in LICENSE LICENCE; do
     if [[ -f "$SOURCE_ROOT/$license" ]]; then cp -L -- "$SOURCE_ROOT/$license" "$TEMP_STAGE/payload/$license"; fi
 done
-manage_install publish "$TEMP_STAGE/payload"
+if (( REINSTALL )); then
+    manage_install reinstall "$TEMP_STAGE/payload"
+else
+    manage_install publish "$TEMP_STAGE/payload"
+fi
+configure_user_path

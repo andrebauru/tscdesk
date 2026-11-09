@@ -69,7 +69,7 @@ PY
 
     def test_installs_once_and_forwards_arguments(self):
         self.user_only()
-        result = self.run_script("--yes", "--skip-build", "--", "--test-profile", "/profile with spaces")
+        result = self.run_script("--yes", "--skip-build", "--abrir", "--", "--test-profile", "/profile with spaces")
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertEqual(json.loads(self.log.read_text())[-2:], ["--yes", "--skip-build"])
         self.assertIn("1", json.loads(self.log.read_text()))
@@ -83,6 +83,24 @@ PY
         result = self.run_script("--check")
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertEqual(json.loads(capture.read_text()), ["--check"])
+
+    def test_first_install_can_finish_without_opening(self):
+        self.user_only()
+        result = self.run_script("--yes", "--skip-build", "--nao-abrir")
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn("instalado", result.stdout.lower())
+        self.assertFalse(Path(self.env["CAPTURE"]).exists())
+        result = self.run_script("--abrir")
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(json.loads(Path(self.env["CAPTURE"]).read_text()), [])
+
+    def test_reinstall_is_explicit_and_can_finish_without_opening(self):
+        self.user_only()
+        result = self.run_script("--yes", "--skip-build", "--reinstalar", "--nao-abrir")
+        self.assertEqual(result.returncode, 0, result.stderr)
+        options = json.loads(self.log.read_text())
+        self.assertIn("--reinstall", options)
+        self.assertFalse(Path(self.env["CAPTURE"]).exists())
 
     def test_diagnostic_does_not_install(self):
         self.user_only()
@@ -112,13 +130,13 @@ PY
     def test_application_help_is_forwarded_and_home_is_normalized(self):
         self.user_only()
         env = dict(self.env, HOME=str(self.home / '..' / self.home.name))
-        result = self.run_script("--", "--help", env=env)
+        result = self.run_script("--abrir", "--", "--help", env=env)
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertEqual(json.loads(Path(self.env["CAPTURE"]).read_text()), ["--help"])
 
     def test_release_symlinks_are_rejected_before_launch(self):
         self.user_only()
-        self.assertEqual(self.run_script().returncode, 0)
+        self.assertEqual(self.run_script("--abrir").returncode, 0)
         capture = Path(self.env["CAPTURE"])
         capture.unlink()
         release = self.home / '.local/opt/tscdesk/releases/fixture'

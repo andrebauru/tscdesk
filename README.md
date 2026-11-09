@@ -111,6 +111,13 @@ bash iniciar-chromeos.sh
 # Instalar/atualizar explicitamente após alterações no código:
 bash iniciar-chromeos.sh --instalar
 
+# Reinstalar e remover versões anteriores gerenciadas, preservando ~/.quixi:
+bash iniciar-chromeos.sh --reinstalar
+
+# Instalar sem abrir, ou abrir automaticamente sem perguntar:
+bash iniciar-chromeos.sh --nao-abrir
+bash iniciar-chromeos.sh --abrir
+
 # Diagnóstico: não instala, não abre a janela e não consulta o RunPod.
 bash iniciar-chromeos.sh --check
 ```
@@ -183,7 +190,15 @@ bash iniciar-chromeos.sh --instalar
 
 O `git pull --ff-only` evita criar merges automaticamente. Se houver alterações locais conflitantes ou divergência de histórico, ele pode recusar a atualização: preserve seu trabalho e resolva o conflito antes de reinstalar, sem usar `reset --hard` ou apagar a pasta.
 
-**Apenas baixar o código não atualiza os executáveis instalados**; a opção `--instalar` recompila e publica uma nova instalação local. Os dados em `~/.quixi`, suas chaves e os projetos não são apagados pelo instalador. Para investigar problemas de abertura, use `bash iniciar-chromeos.sh --check`.
+**Apenas baixar o código não atualiza os executáveis instalados**; a opção `--instalar` recompila e publica uma nova instalação local. `--reinstalar` prepara primeiro a nova versão, encerra somente processos executados a partir de releases gerenciadas, troca o release ativo e remove releases anteriores que tenham o marcador do instalador. Os dados em `~/.quixi`, suas chaves e os projetos não são apagados. Para investigar problemas de abertura, use `bash iniciar-chromeos.sh --check`.
+
+O instalador também garante uma única linha controlada no arquivo de inicialização do shell (`~/.bashrc` no Bash):
+
+```bash
+export PATH="$HOME/.local/bin:$PATH"
+```
+
+Abra um novo Terminal ou execute `source ~/.bashrc`. Confirme com `command -v tscdesk`, que deve apontar para `~/.local/bin/tscdesk`.
 
 ### Cofre de credenciais: passo importante no Crostini
 
@@ -202,7 +217,7 @@ No gerenciador gráfico, crie ou desbloqueie um chaveiro de senhas protegido por
 gnome-keyring-daemon --start --components=secrets
 ```
 
-Isso não desbloqueia automaticamente um chaveiro existente. **Não remova a senha do cofre, não use `QUIXI_TEST_PROFILE` para guardar credenciais reais e não crie um fallback de chave em texto puro.** Se já houver KWallet/Secret Service funcionando, mantenha-o em vez de substituir o serviço.
+Isso não desbloqueia automaticamente um chaveiro existente. Se a persistência falhar, o TSCDesk mantém a chave apenas na memória da sessão atual, informa que ela não foi salva e orienta a abrir o Seahorse/desbloquear o chaveiro antes de tentar novamente. **Não remova a senha do cofre, não use `QUIXI_TEST_PROFILE` para guardar credenciais reais e não crie um fallback de chave em texto puro.** Se já houver KWallet/Secret Service funcionando, mantenha-o em vez de substituir o serviço.
 
 ### Problemas comuns
 
@@ -297,6 +312,8 @@ powershell -ExecutionPolicy Bypass -File .\instalar-windows.ps1
 
 O script detecta uma instalação nova, pede consentimento e instala somente os pré-requisitos ausentes por canais oficiais: Rustup/Rust stable, Microsoft Visual Studio Build Tools com C++/Windows SDK e WebView2 Evergreen. O Build Tools pode solicitar elevação UAC e ocupar vários gigabytes. Depois, compila a versão release, instala o aplicativo somente para o usuário atual em `%LOCALAPPDATA%\Programs\TSCDesk` e cria atalhos no Desktop e no menu Iniciar.
 
+Na primeira instalação, o script pergunta se deseja abrir o TSCDesk. Pressionar Enter ou responder `N` encerra sem abrir. Em automações, escolha explicitamente `-AbrirAoFinal` ou `-NaoAbrirAoFinal`.
+
 Para instalar e abrir imediatamente:
 
 ```powershell
@@ -309,6 +326,8 @@ Opções úteis:
 - `-Diagnostico`: apenas informa o estado de Rust, MSVC/Windows SDK e WebView2.
 - `-PularDependencias`: não instala dependências; falha claramente se alguma necessária estiver ausente.
 - `-PularCompilacao`: reutiliza uma compilação release já existente.
+- `-AbrirAoFinal`: abre o aplicativo ao concluir, sem perguntar.
+- `-NaoAbrirAoFinal`: conclui sem abrir o aplicativo.
 - `-SemAtalhoDesktop`: não cria o atalho no Desktop.
 - `-SemAtalhoMenuIniciar`: não cria o atalho no menu Iniciar.
 - `-Destino "C:\Apps\TSCDesk"`: escolhe outra pasta de instalação.

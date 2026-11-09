@@ -7,10 +7,13 @@ usage() {
 Uso: bash iniciar-chromeos.sh [opções] [-- argumentos do aplicativo]
   --help, -h       Mostrar ajuda; não instala nem abre nada.
   --instalar      Instalar/atualizar explicitamente antes de abrir.
+  --reinstalar    Substituir versões anteriores gerenciadas sem apagar dados.
   --jobs N        Jobs de compilação (padrão 1, adequado a Chromebooks).
   --yes           Consentir com APT e instalação/atualização do Rust.
   --skip-deps     Reutilizar dependências Linux já instaladas.
   --skip-build    Instalar os binários existentes em target/release.
+  --abrir         Abrir o aplicativo após instalar, sem perguntar.
+  --nao-abrir     Instalar e encerrar sem abrir o aplicativo.
   --check         Diagnóstico da instalação existente, sem instalar/abrir.
 
 Execute no Terminal Linux do Chromebook (contêiner Crostini `penguin`), como seu usuário normal.
@@ -29,13 +32,16 @@ for arg in "$@"; do
 done
 [[ "$(uname -s)" == Linux ]] || fail 'Execute no Terminal Linux do ChromeOS (contêiner Crostini penguin).'
 (( EUID != 0 )) || fail 'Não execute como root/sudo; apenas o instalador usa sudo para APT.'
-INSTALL=0 CHECK=0 JOBS=1
+INSTALL=0 CHECK=0 JOBS=1 OPEN_MODE=ask
 OPTIONS=()
 APP_ARGS=()
 while (( $# )); do
     case "$1" in
         --instalar) INSTALL=1; shift ;;
+        --reinstalar) INSTALL=1; OPTIONS+=("--reinstall"); shift ;;
         --check) CHECK=1; shift ;;
+        --abrir) OPEN_MODE=yes; shift ;;
+        --nao-abrir) OPEN_MODE=no; shift ;;
         --jobs) (( $# >= 2 )) || fail 'Informe o valor de --jobs.'; JOBS="$2"; shift 2 ;;
         --yes|--skip-deps|--skip-build) OPTIONS+=("$1"); shift ;;
         --) shift; APP_ARGS=("$@"); break ;;
@@ -44,9 +50,14 @@ while (( $# )); do
 done
 [[ "$JOBS" =~ ^[1-9][0-9]*$ ]] || fail '--jobs deve ser um inteiro positivo.'
 (( ! CHECK || ! INSTALL )) || fail '--check não pode ser usado com --instalar.'
+if (( CHECK )) && [[ "$OPEN_MODE" != ask ]]; then
+    fail '--check não pode ser combinado com --abrir ou --nao-abrir.'
+fi
 [[ -n "${DISPLAY:-}" || -n "${WAYLAND_DISPLAY:-}" ]] || fail 'Sessão gráfica ausente. Abra o Terminal Linux do contêiner penguin no Chromebook.'
 PREFIX="$HOME/.local/opt/tscdesk"
 LAUNCHER="$HOME/.local/bin/tscdesk"
+FIRST_INSTALL=0
+[[ -x "$LAUNCHER" ]] || FIRST_INSTALL=1
 if (( CHECK )); then
     [[ -x "$LAUNCHER" ]] || fail 'Instalação ausente. Execute bash iniciar-chromeos.sh primeiro.'
 elif (( INSTALL )) || [[ ! -x "$LAUNCHER" ]]; then
@@ -87,4 +98,19 @@ except (OSError, ValueError) as exc:
     sys.exit('TSCDesk: ' + str(exc))
 PY
 if (( CHECK )); then exec "$LAUNCHER" --check; fi
+if [[ "$OPEN_MODE" == no ]]; then
+    printf 'TSCDesk instalado. Abra pelo lançador ou execute %s quando desejar.\n' "$LAUNCHER"
+    exit 0
+fi
+if (( FIRST_INSTALL )) && [[ "$OPEN_MODE" == ask ]]; then
+    if [[ ! -t 0 ]]; then
+        printf 'TSCDesk instalado e não aberto. Use --abrir para abrir automaticamente.\n'
+        exit 0
+    fi
+    read -r -p 'Deseja abrir o TSCDesk agora? [s/N] ' answer
+    [[ "$answer" == s || "$answer" == S || "$answer" == sim ]] || {
+        printf 'TSCDesk instalado. Abra pelo lançador quando desejar.\n'
+        exit 0
+    }
+fi
 exec "$LAUNCHER" "${APP_ARGS[@]}"
