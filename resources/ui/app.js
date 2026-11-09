@@ -1,4 +1,4 @@
-/* Copyright (c) 2026 QuixiAI. MIT license. Original QuixiDesk workspace. */
+/* Copyright (c) 2026 QuixiAI. MIT license. Original TsCIDE workspace. */
 (() => {
   "use strict";
   const { api, rpc, copy } = window.quixi;
@@ -351,6 +351,67 @@
   async function loadProviders() {
     state.providers = await api("/api/quixi/providers");
     if (state.providers.credentialStorageError) toast("Credentials could not be saved or unlocked: " + state.providers.credentialStorageError, true);
+    const vault = state.providers.credentialVault || {};
+    if ((vault.setupRequired || (vault.configured && !vault.unlocked && state.providers.credentialStorageError)) && !document.querySelector('dialog[data-master-vault]')) {
+      masterVaultDialog(vault.setupRequired ? "configure" : (vault.configured ? "unlock" : "configure"), vault.setupRequired);
+    }
+  }
+
+  // Keeps master passwords inside password inputs and sends them only to the local engine.
+  function masterVaultDialog(mode = "configure", requestedAfterReinstall = false) {
+    const vault = state.providers?.credentialVault || {};
+    const configured = !!vault.configured;
+    const current = configured && mode === "configure"
+      ? el("input", { type: "password", autocomplete: "current-password" })
+      : null;
+    const password = el("input", {
+      type: "password",
+      autocomplete: mode === "unlock" ? "current-password" : "new-password",
+      minlength: "12",
+    });
+    const confirmation = mode === "configure"
+      ? el("input", { type: "password", autocomplete: "new-password", minlength: "12" })
+      : null;
+    const status = el("div", { class: "hint", role: "status" });
+    const body = el(
+      "div",
+      {},
+      el("p", { class: "muted" },
+        mode === "unlock"
+          ? "Enter the master password to unlock provider credentials for this session."
+          : requestedAfterReinstall
+            ? "The reinstall requested a new master password. Existing provider data is preserved; when a vault already exists, confirm its current password before replacing it."
+            : "Create a master password for secure credential persistence when the operating-system vault is unavailable."),
+      current ? field("Current master password", current) : null,
+      field(mode === "unlock" ? "Master password" : "New master password", password,
+        mode === "configure" ? "Use at least 12 characters. This password is never stored and cannot be recovered." : null),
+      confirmation ? field("Confirm new master password", confirmation) : null,
+      status,
+    );
+    const submit = button(mode === "unlock" ? "Unlock" : "Save master password", async () => {
+      if (confirmation && password.value !== confirmation.value) {
+        status.textContent = "The new passwords do not match.";
+        return;
+      }
+      const result = await api(`/api/quixi/credential-vault/${mode === "unlock" ? "unlock" : "configure"}`, {
+        password: password.value,
+        currentPassword: current?.value || "",
+      });
+      password.value = "";
+      if (current) current.value = "";
+      if (confirmation) confirmation.value = "";
+      if (result?.error) {
+        status.textContent = result.error;
+        return;
+      }
+      document.querySelector('dialog[data-master-vault]')?.close();
+      await loadProviders();
+      renderPage();
+      toast(mode === "unlock" ? "Credential vault unlocked." : "Master password configured.");
+    }, "primary");
+    body.append(el("div", { class: "dialog-actions" }, submit));
+    const opened = dialog(mode === "unlock" ? "Unlock credential vault" : "Master-password vault", body);
+    opened.setAttribute("data-master-vault", "true");
   }
   // These controls only query the local engine. They never ping or warm a provider.
   let agentPollTimer = null, agentStateRevision = 0, agentStatePending = false;
@@ -520,8 +581,8 @@
     };
     document.title =
       state.page === "chat"
-        ? (session()?.title || "Task") + " · QuixiDesk"
-        : "QuixiDesk";
+        ? (session()?.title || "Task") + " · TsCIDE"
+        : "TsCIDE";
     const nav = [
       ["search", "Search", "search"],
       ["projects", "Projects", "projects"],
@@ -539,7 +600,7 @@
         el(
           "span",
           {},
-          "QuixiDesk",
+          "TsCIDE",
           el("span", { class: "brand-caption" }, "Personal workspace"),
         ),
       ),
@@ -617,7 +678,7 @@
         () => providerDirectory(),
         "quiet",
       ),
-      ib("Toggle QuixiDesk Browser", "browser", () => toggleBrowser()),
+      ib("Toggle TsCIDE Browser", "browser", () => toggleBrowser()),
     );
     root.replaceChildren(
       el(
@@ -970,8 +1031,8 @@
       disabled: pendingSubmissions.has(draftKey()),
       placeholder: running(s)
         ? "Write a follow-up while this task runs…"
-        : "Write your prompt to QuixiDesk",
-      "aria-label": "Write your prompt to QuixiDesk",
+        : "Write your prompt to TsCIDE",
+      "aria-label": "Write your prompt to TsCIDE",
       rows: 3,
       value: getDraft(),
       onInput: () => { resetHistory(); saveDraft(); void refreshTriggers(); },
@@ -1174,7 +1235,7 @@
       el(
         "p",
         {},
-        "Tasks can inspect this folder. In Manual mode, QuixiDesk asks before changing files or running commands.",
+        "Tasks can inspect this folder. In Manual mode, TsCIDE asks before changing files or running commands.",
       ),
       browse,
       current ? button("Use without a folder",async()=>{
@@ -1473,7 +1534,7 @@
       document.querySelector(".composer")?.classList.toggle("is-planning", isPlan);
     }
     const input = document.getElementById("prompt");
-    if (input) input.placeholder = active ? "Add a follow-up…" : "Write your prompt to QuixiDesk";
+    if (input) input.placeholder = active ? "Add a follow-up…" : "Write your prompt to TsCIDE";
     updateAgentSendControls();
   }
   async function refreshSession(id) {
@@ -2444,10 +2505,10 @@
             role === "user"
               ? "You"
               : message.message?.stop_reason === "user_stop"
-                ? "QuixiDesk · Stopped"
+                ? "TsCIDE · Stopped"
                 : message.message?.stop_reason === "max_rounds"
-                  ? "QuixiDesk · Round cap reached"
-                  : "QuixiDesk",
+                  ? "TsCIDE · Round cap reached"
+                  : "TsCIDE",
           ),
           bodyHost,
           attachedFiles.length ? el("div",{class:"transcript-attachments"},...attachedFiles.map(f=>el("div",{class:"chip"},f.preview?el("img",{src:f.preview,alt:f.name,class:"transcript-image"}):icon("file",14),f.name))) : null,
@@ -2518,7 +2579,7 @@
           el(
             "article",
             { class: "message assistant" },
-            el("div", { class: "role" }, "QuixiDesk"),
+            el("div", { class: "role" }, "TsCIDE"),
             plainBody(stream.text),
           ),
         );
@@ -2920,7 +2981,7 @@
       el(
         "div",
         { class: "notice" },
-        "Schedules run while QuixiDesk is open, using this computer’s time zone. Missed times are skipped. Manual-mode tools still ask for approval. Edit and save older definitions to activate scheduling.",
+        "Schedules run while TsCIDE is open, using this computer’s time zone. Missed times are skipped. Manual-mode tools still ask for approval. Edit and save older definitions to activate scheduling.",
       ),
     );
     const list = el("div", { class: "list" });
@@ -3400,7 +3461,7 @@
       problem.hidden = !problem.textContent;
       const diagnostics = row.querySelector(".mcp-diagnostics-content");
       diagnostics.textContent = [
-        server.builtin ? "Built into QuixiDesk" : (server.transport ? `Transport: ${server.transport}` : ""),
+        server.builtin ? "Built into TsCIDE" : (server.transport ? `Transport: ${server.transport}` : ""),
         server.cwd ? `Workspace: ${server.cwd}` : "",
         server.serverInfo?.name ? `Server: ${server.serverInfo.name}${server.serverInfo.version ? " " + server.serverInfo.version : ""}` : "",
         server.error?.kind ? `Failure: ${server.error.kind}` : "",
@@ -3509,6 +3570,7 @@
     const tabs = [
       ["general", "General"],
       ["providers", "Providers"],
+      ["security", "Security"],
       ["privacy", "Privacy & data"],
       ["about", "About"],
     ];
@@ -3673,8 +3735,31 @@
             },
             { "aria-label": "Subagent model preference" },
           ),
-          "By default, subagents always use your active chat model. If an assistant asks to run a subagent with another model, QuixiDesk asks you first.",
+          "By default, subagents always use your active chat model. If an assistant asks to run a subagent with another model, TsCIDE asks you first.",
         ),
+      );
+    } else if (state.settingsTab === "security") {
+      const vault = state.providers?.credentialVault || {};
+      content.append(
+        el("h2", {}, "Credential vault"),
+        el("p", { class: "muted" },
+          "The native operating-system vault is preferred. A master password provides an encrypted local fallback when that vault is unavailable."),
+        el("div", { class: "notice" }, vault.configured
+          ? `Local master-password vault configured and ${vault.unlocked ? "unlocked for this session" : "locked"}.`
+          : "No local master-password vault is configured."),
+        vault.configured
+          ? button(vault.unlocked ? "Replace master password" : "Unlock vault", () => masterVaultDialog(vault.unlocked ? "configure" : "unlock"), "primary")
+          : button("Create master password", () => masterVaultDialog("configure"), "primary"),
+        vault.configured && vault.unlocked
+          ? button("Lock now", async () => {
+              const result = await api("/api/quixi/credential-vault/lock", {});
+              if (result?.error) throw new Error(result.error);
+              state.providers = result;
+              renderPage();
+              toast("Credential vault locked.");
+            })
+          : null,
+        el("p", { class: "hint" }, "If you forget the master password, credentials protected by this local vault cannot be recovered."),
       );
     } else if (state.settingsTab === "privacy") {
       content.append(
@@ -3732,11 +3817,11 @@
       content.append(
         el("img", {
           src: "/quixi-mark.svg",
-          alt: "QuixiDesk",
+          alt: "TsCIDE",
           width: 58,
           height: 58,
         }),
-        el("h2", { style: "margin-top:20px" }, "QuixiDesk"),
+        el("h2", { style: "margin-top:20px" }, "TsCIDE"),
         el(
           "p",
           { class: "muted" },
@@ -3750,7 +3835,7 @@
         ),
         button(
           "Open project website",
-          () => openExternal("https://github.com/QuixiAI/QuixiDesk"),
+          () => openExternal("https://github.com/andrebauru/tscdesk"),
           "quiet",
         ),
       );
@@ -4815,7 +4900,7 @@
         "div",
         { class: "browser-head" },
         icon("browser", 16),
-        el("strong", {}, "QuixiDesk Browser"),
+        el("strong", {}, "TsCIDE Browser"),
         ib("Close browser", "close", () => {
           state.browser = false;
           panel.remove();
@@ -5233,8 +5318,8 @@
     if (summary?.activeJobs) parts.push(`${summary.activeJobs} background job(s)`);
     if (summary?.armedSchedules) parts.push(`${summary.armedSchedules} scheduled task(s)`);
     confirmDialog(
-      "Quit QuixiDesk?",
-      `Active work will be interrupted (${parts.join(", ") || "in-progress work"}). Scheduled tasks also pause while QuixiDesk is closed.`,
+      "Quit TsCIDE?",
+      `Active work will be interrupted (${parts.join(", ") || "in-progress work"}). Scheduled tasks also pause while TsCIDE is closed.`,
       async () => {
         await fetch("/__eipc__/window-action", {
           method: "POST",

@@ -1,4 +1,4 @@
-//! `QuixiDesk` — Native Cross-Platform Rust Desktop Application (`tao` + `wry` + Tokio + Rayon)
+//! `TsCIDE` — Native Cross-Platform Rust Desktop Application (`tao` + `wry` + Tokio + Rayon)
 //! Zero Node.js, zero Electron processes. Serves the original interface over `app://localhost` and bridges
 //! desktop service and event channels to `QuixiEngine` & `EipcRouter`.
 
@@ -16,6 +16,24 @@ use tao::{
     event_loop::{ControlFlow, EventLoopBuilder},
     window::WindowBuilder,
 };
+
+/// Loads the bundled TsCIDE icon without depending on platform-specific image APIs.
+fn load_window_icon(resources_dir: &Path) -> Option<tao::window::Icon> {
+    let file = std::fs::File::open(resources_dir.join("tscide-icon.png")).ok()?;
+    let decoder = png::Decoder::new(std::io::BufReader::new(file));
+    let mut reader = decoder.read_info().ok()?;
+    let mut buffer = vec![0; reader.output_buffer_size()];
+    let info = reader.next_frame(&mut buffer).ok()?;
+    if info.color_type != png::ColorType::Rgba || info.bit_depth != png::BitDepth::Eight {
+        return None;
+    }
+    tao::window::Icon::from_rgba(
+        buffer[..info.buffer_size()].to_vec(),
+        info.width,
+        info.height,
+    )
+    .ok()
+}
 use wry::{
     http::{header::CONTENT_TYPE, Response, StatusCode},
     WebViewBuilder,
@@ -81,7 +99,7 @@ extern "C" fn quit_menu(_: &objc::runtime::Object, _: objc::runtime::Sel, _: coc
     if let Some(proxy) = MENU_PROXY.get() { let _ = proxy.lock().unwrap().send_event(UserEvent::CloseWindow); }
 }
 
-/// Installs a native macOS `NSMenu` bar (`QuixiDesk`, `Edit`, `Window`) on `NSApp` so that
+/// Installs a native macOS `NSMenu` bar (`TsCIDE`, `Edit`, `Window`) on `NSApp` so that
 /// standard AppKit responder selectors (`copy:` Cmd+C, `paste:` Cmd+V, `cut:` Cmd+X,
 /// `selectAll:` Cmd+A, `undo:` Cmd+Z, `redo:` Cmd+Shift+Z, `terminate:` Cmd+Q, `hide:` Cmd+H,
 /// `performClose:` Cmd+W, `performMiniaturize:` Cmd+M) are routed through the First Responder
@@ -103,19 +121,19 @@ fn setup_macos_main_menu() {
 
         let main_menu = NSMenu::new(nil).autorelease();
 
-        // 1. App Menu ("QuixiDesk")
+        // 1. App Menu ("TsCIDE")
         let app_menu_item = NSMenuItem::new(nil).autorelease();
         main_menu.addItem_(app_menu_item);
         let app_menu = NSMenu::alloc(nil)
-            .initWithTitle_(NSString::alloc(nil).init_str("QuixiDesk"))
+            .initWithTitle_(NSString::alloc(nil).init_str("TsCIDE"))
             .autorelease();
 
         let about = NSMenuItem::alloc(nil).initWithTitle_action_keyEquivalent_(
-            NSString::alloc(nil).init_str("About QuixiDesk"), sel!(orderFrontStandardAboutPanel:),
+            NSString::alloc(nil).init_str("About TsCIDE"), sel!(orderFrontStandardAboutPanel:),
             NSString::alloc(nil).init_str("")).autorelease();
         app_menu.addItem_(about);
-        let cls = objc::runtime::Class::get("QuixiDeskMenuActions").unwrap_or_else(|| {
-            let mut decl = objc::declare::ClassDecl::new("QuixiDeskMenuActions", objc::class!(NSObject)).unwrap();
+        let cls = objc::runtime::Class::get("TsCIDEMenuActions").unwrap_or_else(|| {
+            let mut decl = objc::declare::ClassDecl::new("TsCIDEMenuActions", objc::class!(NSObject)).unwrap();
             decl.add_method(sel!(openSettings:), open_settings_menu as extern "C" fn(&objc::runtime::Object, objc::runtime::Sel, id));
             decl.add_method(sel!(quitSafely:), quit_menu as extern "C" fn(&objc::runtime::Object, objc::runtime::Sel, id));
             decl.register()
@@ -128,7 +146,7 @@ fn setup_macos_main_menu() {
         app_menu.addItem_(settings);
         app_menu.addItem_(NSMenuItem::separatorItem(nil));
 
-        let hide_title = NSString::alloc(nil).init_str("Hide QuixiDesk");
+        let hide_title = NSString::alloc(nil).init_str("Hide TsCIDE");
         let hide_key = NSString::alloc(nil).init_str("h");
         let hide_item = NSMenuItem::alloc(nil)
             .initWithTitle_action_keyEquivalent_(hide_title, sel!(hide:), hide_key)
@@ -162,7 +180,7 @@ fn setup_macos_main_menu() {
 
         app_menu.addItem_(NSMenuItem::separatorItem(nil));
 
-        let quit_title = NSString::alloc(nil).init_str("Quit QuixiDesk");
+        let quit_title = NSString::alloc(nil).init_str("Quit TsCIDE");
         let quit_key = NSString::alloc(nil).init_str("q");
         let quit_item = NSMenuItem::alloc(nil)
             .initWithTitle_action_keyEquivalent_(quit_title, sel!(quitSafely:), quit_key)
@@ -423,7 +441,7 @@ fn start_automation_http_server(proxy: tao::event_loop::EventLoopProxy<UserEvent
         use std::io::{Read, Write};
         use std::time::Duration;
 
-        tracing::info!("QuixiDesk native UI & screenshot bridge listening on http://{}", addr);
+        tracing::info!("TsCIDE native UI & screenshot bridge listening on http://{}", addr);
 
         for stream in listener.incoming().flatten() {
             let proxy = proxy.clone();
@@ -742,10 +760,10 @@ fn main() -> anyhow::Result<()> {
         )
         .init();
 
-    // Support multi-call invocation when QuixiDesk binary is invoked as a helper
+    // Support multi-call invocation when TsCIDE binary is invoked as a helper
     if let Some(arg1) = std::env::args().nth(1) {
         if arg1 == "--version" || arg1 == "-v" {
-            println!("QuixiDesk {}", env!("CARGO_PKG_VERSION"));
+            println!("TsCIDE {}", env!("CARGO_PKG_VERSION"));
             return Ok(());
         }
     }
@@ -774,7 +792,7 @@ fn main() -> anyhow::Result<()> {
         for sub in ["workspace", "tmp", "home/Documents", "home/Downloads", "home/Desktop"] { fs::create_dir_all(profile.join(sub))?; }
     }
     let resources_dir = locate_resources_dir();
-    tracing::info!("QuixiDesk booting with resources_dir: {:?}", resources_dir);
+    tracing::info!("TsCIDE booting with resources_dir: {:?}", resources_dir);
 
     // Start background Tokio runtime for async engine operations
     let tokio_rt = tokio::runtime::Builder::new_multi_thread()
@@ -829,9 +847,12 @@ fn main() -> anyhow::Result<()> {
 
     // Build the native workspace window and titlebar inset.
     let mut win_builder = WindowBuilder::new()
-        .with_title(if test_profile.is_some() { "QuixiDesk — Test Profile" } else { "QuixiDesk" })
+        .with_title(if test_profile.is_some() { "TsCIDE — Test Profile" } else { "TsCIDE" })
         .with_inner_size(LogicalSize::new(1280.0, 840.0))
         .with_min_inner_size(LogicalSize::new(480.0, 360.0));
+    if let Some(icon) = load_window_icon(&resources_dir) {
+        win_builder = win_builder.with_window_icon(Some(icon));
+    }
 
     #[cfg(target_os = "macos")]
     {
@@ -865,7 +886,7 @@ fn main() -> anyhow::Result<()> {
     let protocol_router = router.clone();
     let protocol_proxy = proxy.clone();
 
-    let user_agent = concat!("Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 (KHTML, like Gecko) QuixiDesk/", env!("CARGO_PKG_VERSION"), " Safari/605.1.15");
+    let user_agent = concat!("Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 (KHTML, like Gecko) TsCIDE/", env!("CARGO_PKG_VERSION"), " Safari/605.1.15");
 
     let mut web_context = wry::WebContext::new(quixi_proto::paths::test_profile().map(|p| p.join("website-data")));
     let mut webview_builder = if test_profile.is_some() { WebViewBuilder::with_web_context(&mut web_context) } else { WebViewBuilder::new() };
@@ -1085,11 +1106,11 @@ fn main() -> anyhow::Result<()> {
             Event::NewEvents(StartCause::Init) => {
                 #[cfg(target_os = "macos")]
                 setup_macos_main_menu();
-                tracing::info!("QuixiDesk native window initialized (app://localhost/)");
+                tracing::info!("TsCIDE native window initialized (app://localhost/)");
             }
             Event::LoopDestroyed => {
                 engine.mcp_host.shutdown();
-                tracing::info!("QuixiDesk native event loop stopped");
+                tracing::info!("TsCIDE native event loop stopped");
             }
             Event::WindowEvent {
                 event: WindowEvent::CloseRequested,
@@ -1165,7 +1186,7 @@ fn main() -> anyhow::Result<()> {
                             "if (typeof window.__quixi_confirm_quit_active_work__ === 'function') {{ window.__quixi_confirm_quit_active_work__({summary}); }} else {{ fetch('/__eipc__/window-action',{{method:'POST',headers:{{'Content-Type':'application/json'}},body:JSON.stringify({{action:'force_close'}})}}); }}"
                         ));
                     } else {
-                        tracing::info!("Closing QuixiDesk with conversations durably saved");
+                        tracing::info!("Closing TsCIDE with conversations durably saved");
                         exit_event_loop(control_flow);
                     }
                 }

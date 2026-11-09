@@ -195,7 +195,7 @@ test("read aloud can be canceled and late callbacks cannot restart playback", as
 
 test("desktop status uses version and live storage while avoiding fabricated update or OS state", async () => {
   const f = fixture(); await f.module.renderDesktopStatus(f.host);
-  assert.match(f.host.textContent, /QuixiDesk 3.7.1/);
+  assert.match(f.host.textContent, /TsCIDE 3.7.1/);
   assert.match(f.host.textContent, /No storage problems reported/);
   assert.doesNotMatch(f.host.textContent, /fake legacy|up.to.date|Sequoia/);
   assert.equal(f.calls.some((call) => call.member === "getSystemInfo"), false);

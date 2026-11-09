@@ -27,7 +27,9 @@ quixi-workspace.workspace = true
 quixi-mcp.workspace = true
 quixi-netstack.workspace = true
 aes-gcm = "0.10"
+argon2 = "0.5"
 keyring = { version = "3.6.3", features = ["apple-native", "windows-native", "sync-secret-service", "crypto-rust", "vendored"] }
+zeroize = "1.8"
 cron = "0.15"
 
 [target.'cfg(unix)'.dependencies]

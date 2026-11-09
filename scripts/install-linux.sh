@@ -220,17 +220,17 @@ try:
     if mode not in ('publish', 'reinstall'):
         fail('Unknown installation mode')
     staged = Path(stage)
-    icon = next((name for name in ('quixi-logo.svg', 'quixi-mark.svg')
+    icon = next((name for name in ('quixi-mark.svg', 'quixi-logo.svg')
                  if (staged / 'resources' / name).is_file()), None)
     if not icon:
-        fail('Missing resources/quixi-logo.svg or quixi-mark.svg')
+        fail('Missing resources/quixi-mark.svg or quixi-logo.svg')
     version_match = re.search(r'^version\s*=\s*"([A-Za-z0-9_.-]+)"',
                               (Path(source) / 'Cargo.toml').read_text(), re.M)
     version = version_match.group(1) if version_match else 'unknown'
     wrapper = ('#!/usr/bin/env bash\n' + launcher_mark + '\nset -euo pipefail\nexec ' +
                shlex.quote(str(prefix / 'current/bin/launch-linux.sh')) + ' "$@"\n').encode()
     # A fixed executable also allows '=' in the script path (forbidden in an Exec executable).
-    entry = ('[Desktop Entry]\nType=Application\nName=TSCDesk\n' + desktop_mark +
+    entry = ('[Desktop Entry]\nType=Application\nName=TsCIDE\n' + desktop_mark +
              '\nExec=/bin/bash ' + desktop_exec(str(launcher)) + '\nIcon=' +
              desktop_string(str(prefix / 'current/resources' / icon)) +
              '\nTerminal=false\nStartupWMClass=QuixiDesk\nCategories=Development;\n').encode()
@@ -278,7 +278,7 @@ try:
                 link.unlink()
         if mode == 'reinstall':
             remove_old_managed_releases(release)
-    print('Installed TSCDesk at ' + str(prefix))
+    print('Installed TsCIDE at ' + str(prefix))
     print('Launch: ' + str(launcher) + ' (add ~/.local/bin to PATH if necessary)')
 except (OSError, ValueError, RuntimeError) as exc:
     print('install-linux: ' + str(exc), file=sys.stderr)
@@ -333,6 +333,34 @@ configure_user_path() {
     export PATH="$HOME/.local/bin:$PATH"
     printf 'install-linux: open a new Terminal or run: source %q\n' "$config"
 }
+
+# Marks the next launch without following user-controlled symlinks.
+request_master_password_setup() {
+    python3 - "$HOME/.quixi" <<'PY'
+import os
+import sys
+from pathlib import Path
+
+directory = Path(sys.argv[1])
+if directory.is_symlink():
+    raise SystemExit('install-linux: refusing symlinked credential data directory')
+directory.mkdir(mode=0o700, parents=True, exist_ok=True)
+if not directory.is_dir() or directory.stat().st_uid != os.getuid():
+    raise SystemExit('install-linux: credential data directory is not owned by the current user')
+marker = directory / 'master-password-setup-required'
+if marker.is_symlink():
+    raise SystemExit('install-linux: refusing symlinked master-password marker')
+temporary = directory / f'.master-password-setup-{os.getpid()}.tmp'
+fd = os.open(temporary, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+try:
+    os.write(fd, b'Set a new master password after reinstalling TsCIDE.\n')
+    os.fsync(fd)
+finally:
+    os.close(fd)
+os.replace(temporary, marker)
+PY
+    printf 'install-linux: TsCIDE will request a new master password on first launch.\n'
+}
 DEPS_INSTALLED=0
 if ! command -v python3 >/dev/null 2>&1; then
     (( ! SKIP_DEPS )) || fail 'python3 is required; rerun without --skip-deps so it can be installed.'
@@ -383,6 +411,7 @@ for license in LICENSE LICENCE; do
 done
 if (( REINSTALL )); then
     manage_install reinstall "$TEMP_STAGE/payload"
+    request_master_password_setup
 else
     manage_install publish "$TEMP_STAGE/payload"
 fi

@@ -13,10 +13,10 @@
     notice.setAttribute('aria-label', 'Conversation storage problem');
     notice.style.cssText = 'position:fixed;z-index:2147483647;right:16px;top:48px;box-sizing:border-box;width:min(440px,calc(100vw - 32px));max-height:calc(100vh - 64px);overflow:auto;padding:16px;border:2px solid #fbbf24;border-radius:10px;background:#422006;color:#fff7ed;font:14px/1.4 system-ui;box-shadow:0 8px 32px #0008;';
     var title = document.createElement('strong');
-    title.textContent = unsaved ? 'Conversation not saved — keep QuixiDesk open' : 'Conversation saved in recovery storage';
+    title.textContent = unsaved ? 'Conversation not saved — keep TsCIDE open' : 'Conversation saved in recovery storage';
     var description = document.createElement('p');
     description.textContent = unsaved
-      ? 'QuixiDesk could not save your conversation or a recovery copy. It is still in memory. Restore storage access or free disk space, then retry saving. Quitting is blocked while your only copy is in memory.'
+      ? 'TsCIDE could not save your conversation or a recovery copy. It is still in memory. Restore storage access or free disk space, then retry saving. Quitting is blocked while your only copy is in memory.'
       : 'Your usual conversation folder is unavailable. A recovery copy will restore your conversation after restart. Restore storage access, then retry saving.';
     var details = document.createElement('details');
     details.style.cssText = 'margin:8px 0;';
@@ -32,7 +32,7 @@
       fetch('/api/quixi/storage/retry', {method: 'POST'}).then(function (response) {
         if (!response.ok) throw new Error('Storage retry failed');
         return response.json();
-      }).then(show).catch(function () { retry.disabled = false; description.textContent = 'Saving could not be retried. Keep QuixiDesk open and try again.'; });
+      }).then(show).catch(function () { retry.disabled = false; description.textContent = 'Saving could not be retried. Keep TsCIDE open and try again.'; });
     };
     var copy = document.createElement('button');
     copy.textContent = 'Copy recovery data';

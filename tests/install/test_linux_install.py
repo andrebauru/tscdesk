@@ -55,6 +55,7 @@ class LinuxInstallTests(unittest.TestCase):
         (self.source / "Cargo.toml").write_text('[workspace.package]\nversion = "1.2.3"\n')
         (self.source / "LICENCE").write_text("fixture licence\n")
         (self.source / "resources/quixi-logo.svg").write_text("<svg/>\n")
+        (self.source / "resources/quixi-mark.svg").write_text("<svg/>\n")
         (self.source / "resources/ui/index.html").write_text("fixture UI\n")
         app = self.source / "target/release/QuixiDesk"
         app.write_text('''#!/usr/bin/env python3
@@ -149,6 +150,7 @@ exec "$@"
         old = self.prefix / os.readlink(self.prefix / "current")
         (old / "old-release-only").write_text("remove with managed release")
         self.install("--reinstall")
+        self.assertTrue((self.home / ".quixi" / "master-password-setup-required").is_file())
         current = (self.prefix / "current").resolve()
         self.assertNotEqual(old, current)
         self.assertFalse(old.exists())
@@ -241,6 +243,7 @@ exec "$@"
         current = os.readlink(self.prefix / "current")
         prior = self.launcher.read_bytes(), self.desktop.read_bytes()
         (self.source / "resources/quixi-logo.svg").unlink()
+        (self.source / "resources/quixi-mark.svg").unlink()
         self.install(ok=False)
         self.assertEqual(os.readlink(self.prefix / "current"), current)
         self.assertEqual((self.launcher.read_bytes(), self.desktop.read_bytes()), prior)
@@ -253,7 +256,6 @@ exec "$@"
         self.install()
         current = os.readlink(self.prefix / "current")
         prior = self.launcher.read_bytes(), self.desktop.read_bytes()
-        (self.source / "resources/quixi-logo.svg").rename(self.source / "resources/quixi-mark.svg")
         # Interpreter shim injects a filesystem failure at the commit point.
         # Production scripts have no test-only environment bypass or source override.
         self.command("python3", '''#!/usr/bin/python3
@@ -388,7 +390,7 @@ Path(os.environ['BUILD_LOG']).write_text(json.dumps(sys.argv[1:]))
     def test_desktop_quoting_special_paths(self):
         self.install()
         lines = dict(line.split("=", 1) for line in self.desktop.read_text().splitlines() if "=" in line)
-        self.assertEqual(lines["Name"], "TSCDesk")
+        self.assertEqual(lines["Name"], "TsCIDE")
         self.assertEqual(lines["StartupWMClass"], "QuixiDesk")
         # freedesktop string unescape followed by Exec quote/backslash parsing.
         def unescape(value):
@@ -406,7 +408,7 @@ Path(os.environ['BUILD_LOG']).write_text(json.dumps(sys.argv[1:]))
         # shlex retains escapes of $ and `; Exec explicitly unescapes these too.
         command = [arg.replace('\\$', '$').replace('\\`', '`').replace('%%', '%') for arg in command]
         self.assertEqual(command, ["/bin/bash", str(self.launcher)])
-        self.assertEqual(unescape(lines["Icon"]), str(self.prefix / "current/resources/quixi-logo.svg"))
+        self.assertEqual(unescape(lines["Icon"]), str(self.prefix / "current/resources/quixi-mark.svg"))
 
     def test_options_and_architecture(self):
         for args in (("--jobs", "0"), ("--jobs", "abc"), ("--jobs",), ("--prefix", "relative"), ("--nope",)):
@@ -420,11 +422,11 @@ Path(os.environ['BUILD_LOG']).write_text(json.dumps(sys.argv[1:]))
         self.install(ok=False)
 
     def test_mark_icon_fallback_and_optional_helpers(self):
-        (self.source / "resources/quixi-logo.svg").rename(self.source / "resources/quixi-mark.svg")
+        (self.source / "resources/quixi-mark.svg").unlink()
         for helper in (self.source / "target/release").glob("quixi-*"):
             helper.unlink()
         self.install()
-        self.assertIn("quixi-mark.svg", self.desktop.read_text())
+        self.assertIn("quixi-logo.svg", self.desktop.read_text())
 
 
 if __name__ == "__main__":

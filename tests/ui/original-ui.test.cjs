@@ -409,7 +409,7 @@ test("unsent drafts survive navigation and provider names are not application br
     assert.equal(f.w.document.querySelector("#prompt").value, "Draft café 🌲");
     assert.equal(
       f.w.document.querySelector(".brand").textContent,
-      "QuixiDeskPersonal workspace",
+      "TsCIDEPersonal workspace",
     );
     assert.equal(
       f.w.document.querySelector("#send-button").textContent,
@@ -440,7 +440,7 @@ test("sending clears the correct draft and leaves Stop available during an activ
     );
     assert.equal(
       f.w.document.querySelector("#prompt").placeholder,
-      "Write your prompt to QuixiDesk",
+      "Write your prompt to TsCIDE",
     );
     assert.equal(f.calls.filter((c) => c.member === "sendMessageV2").length, 1);
   } finally {
@@ -643,7 +643,7 @@ test("opening a search result restores that conversation's workspace", async () 
 test("out-of-order browser snapshots cannot create duplicate panels", async () => {
   const f = await fixture();
   try {
-    await f.click("Toggle QuixiDesk Browser");
+    await f.click("Toggle TsCIDE Browser");
     assert.equal(f.w.document.querySelectorAll(".browser-panel").length, 1);
     const pending = [];
     f.w.fetch = () => new Promise((resolve) => pending.push(resolve));
@@ -1043,7 +1043,7 @@ test("stopped response text stays readable after reopening a conversation", asyn
     await f.click("Existing conversation");
     assert.match(
       f.w.document.querySelector(".message.assistant").textContent,
-      /QuixiDesk · Stopped.*partial response/s,
+      /TsCIDE · Stopped.*partial response/s,
     );
     await f.click("Search");
     await f.click("Existing conversation");

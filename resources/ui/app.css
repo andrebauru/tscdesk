@@ -1,34 +1,36 @@
-/* Copyright (c) 2026 QuixiAI. MIT license. Original QuixiDesk interface. */
+/* Copyright (c) 2026 QuixiAI. MIT license. TsCIDE interface theme. */
 :root {
   font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
   color-scheme: dark;
-  --bg: #191c20;
-  --panel: #202429;
-  --raised: #2a3036;
-  --sidebar: #15181c;
-  --line: #343a41;
-  --text: #edf0f2;
-  --muted: #a2aab3;
-  --accent: #8bd5bd;
-  --ink: #142c25;
-  --danger: #f29a9d;
-  --shadow: 0 24px 80px #0006, 0 2px 8px #0003;
+  --bg: #070b18;
+  --panel: #0d1428;
+  --raised: #151f3d;
+  --sidebar: #080d1d;
+  --line: #24345b;
+  --text: #eaf7ff;
+  --muted: #91a4c5;
+  --accent: #22d3ee;
+  --accent-secondary: #8b5cf6;
+  --ink: #06121c;
+  --danger: #fb7185;
+  --shadow: 0 24px 80px #020617a8, 0 2px 8px #02061766;
   font-size: 14px;
   -webkit-font-smoothing: antialiased;
 }
 :root[data-theme="light"] {
   color-scheme: light;
-  --bg: #fcfcfa;
+  --bg: #f4f8ff;
   --panel: #ffffff;
-  --raised: #f0f2ef;
-  --sidebar: #f2f3f0;
-  --line: #e0e4df;
-  --text: #252d2b;
-  --muted: #68736e;
-  --accent: #27765e;
+  --raised: #e9f1ff;
+  --sidebar: #edf4ff;
+  --line: #cbd9ee;
+  --text: #111c36;
+  --muted: #536784;
+  --accent: #0e7490;
+  --accent-secondary: #6d28d9;
   --ink: #ffffff;
-  --danger: #b5454e;
-  --shadow: 0 24px 80px #1d342519, 0 2px 8px #1d34250d;
+  --danger: #be123c;
+  --shadow: 0 24px 80px #1725541f, 0 2px 8px #17255412;
 }
 * {
   box-sizing: border-box;
@@ -237,6 +239,12 @@ summary {
 .brand img {
   width: 27px;
   height: 27px;
+}
+.brand > span {
+  background: linear-gradient(90deg, var(--accent), var(--accent-secondary));
+  background-clip: text;
+  -webkit-background-clip: text;
+  color: transparent;
 }
 .sidebar nav {
   display: grid;
@@ -1154,6 +1162,7 @@ dialog::backdrop {
   letter-spacing: 0;
   font-weight: 400;
   margin-top: 2px;
+  -webkit-text-fill-color: var(--muted);
 }
 .message .body a {
   word-break: break-word;
@@ -1589,39 +1598,39 @@ label {
   display: flex;
   padding: 8px;
   border-radius: 4px;
-  background: #fcfcfa;
-  border: 1px solid #dfe4dd;
+  background: #f4f8ff;
+  border: 1px solid #cbd9ee;
   overflow: hidden;
   gap: 7px;
 }
 .theme-swatch > span:first-child {
   width: 22%;
   height: 100%;
-  background: #e5e9e3;
+  background: #dbeafe;
   border-radius: 2px;
 }
 .theme-swatch > span:last-child {
   flex: 1;
   height: 48%;
   margin-top: 15px;
-  background: #e6ebe5;
+  background: #c4b5fd;
   border-radius: 3px;
 }
 .theme-swatch.dark {
-  background: #191c20;
-  border-color: #343a41;
+  background: #070b18;
+  border-color: #24345b;
 }
 .theme-swatch.dark > span:first-child {
-  background: #101317;
+  background: #080d1d;
 }
 .theme-swatch.dark > span:last-child {
-  background: #343a41;
+  background: #24345b;
 }
 .theme-swatch.system {
-  background: linear-gradient(90deg, #fcfcfa 50%, #191c20 50%);
+  background: linear-gradient(90deg, #f4f8ff 50%, #070b18 50%);
 }
 .theme-swatch.system > span:last-child {
-  background: linear-gradient(90deg, #e6ebe5 36%, #343a41 36%);
+  background: linear-gradient(90deg, #c4b5fd 36%, #24345b 36%);
 }
 .theme-label {
   display: flex;

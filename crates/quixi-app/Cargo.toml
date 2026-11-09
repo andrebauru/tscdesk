@@ -29,6 +29,7 @@ http.workspace = true
 url.workspace = true
 dirs.workspace = true
 uuid.workspace = true
+png.workspace = true
 
 [target.'cfg(target_os = "macos")'.dependencies]
 objc.workspace = true

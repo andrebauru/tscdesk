@@ -204,7 +204,11 @@ function Criar-Atalho {
     $atalho = $shell.CreateShortcut($Caminho)
     $atalho.TargetPath = $Executavel
     $atalho.WorkingDirectory = $DiretorioTrabalho
-    $atalho.Description = 'TSCDesk'
+    $atalho.Description = 'TsCIDE'
+    $iconeTsCIDE = Join-Path $DiretorioTrabalho 'resources\tscide.ico'
+    if (Test-Path -LiteralPath $iconeTsCIDE -PathType Leaf) {
+        $atalho.IconLocation = $iconeTsCIDE
+    }
     $atalho.Save()
 }
 
@@ -219,8 +223,30 @@ function Confirmar-PrimeiraAbertura {
         return $false
     }
 
-    $resposta = Read-Host 'Deseja abrir o TSCDesk agora? [s/N]'
+    $resposta = Read-Host 'Deseja abrir o TsCIDE agora? [s/N]'
     return $resposta -in @('s', 'S', 'sim', 'SIM', 'Sim')
+}
+
+# Marca a proxima abertura para solicitar uma nova senha mestra apos reinstalacao.
+function Solicitar-NovaSenhaMestra {
+    $diretorioDados = Join-Path $env:USERPROFILE '.quixi'
+    if (Test-Path -LiteralPath $diretorioDados) {
+        $itemDados = Get-Item -LiteralPath $diretorioDados -Force
+        if (-not $itemDados.PSIsContainer -or ($itemDados.Attributes -band [IO.FileAttributes]::ReparsePoint)) {
+            Parar-Instalacao "o diretorio de dados '$diretorioDados' nao e uma pasta local segura."
+        }
+    }
+    else {
+        New-Item -ItemType Directory -Path $diretorioDados | Out-Null
+    }
+
+    $marcadorSenha = Join-Path $diretorioDados 'master-password-setup-required'
+    if ((Test-Path -LiteralPath $marcadorSenha) -and
+        ((Get-Item -LiteralPath $marcadorSenha -Force).Attributes -band [IO.FileAttributes]::ReparsePoint)) {
+        Parar-Instalacao "o marcador de senha mestra '$marcadorSenha' e um link e nao sera sobrescrito."
+    }
+    Set-Content -LiteralPath $marcadorSenha -Value 'Configure uma nova senha mestra apos reinstalar o TsCIDE.' -Encoding UTF8
+    Write-Host 'O TsCIDE solicitara uma nova senha mestra na proxima abertura.'
 }
 
 if (-not (Test-Path -LiteralPath $manifesto -PathType Leaf)) {
@@ -347,7 +373,7 @@ try {
     Write-Host '[4/4] Criando atalhos...'
     $executavelInstalado = Join-Path $destinoCompleto 'QuixiDesk.exe'
     if (-not $SemAtalhoMenuIniciar) {
-        $menuIniciar = Join-Path ([Environment]::GetFolderPath('Programs')) 'TSCDesk\TSCDesk.lnk'
+        $menuIniciar = Join-Path ([Environment]::GetFolderPath('Programs')) 'TsCIDE\TsCIDE.lnk'
         try {
             Criar-Atalho -Caminho $menuIniciar -Executavel $executavelInstalado -DiretorioTrabalho $destinoCompleto
         }
@@ -356,7 +382,7 @@ try {
         }
     }
     if (-not $SemAtalhoDesktop) {
-        $desktop = Join-Path ([Environment]::GetFolderPath('Desktop')) 'TSCDesk.lnk'
+        $desktop = Join-Path ([Environment]::GetFolderPath('Desktop')) 'TsCIDE.lnk'
         try {
             Criar-Atalho -Caminho $desktop -Executavel $executavelInstalado -DiretorioTrabalho $destinoCompleto
         }
@@ -365,12 +391,15 @@ try {
         }
     }
 
-    Write-Host "TSCDesk instalado com sucesso em: $destinoCompleto" -ForegroundColor Green
+    Write-Host "TsCIDE instalado com sucesso em: $destinoCompleto" -ForegroundColor Green
+    if (-not $primeiraInstalacao) {
+        Solicitar-NovaSenhaMestra
+    }
     if (Confirmar-PrimeiraAbertura -PrimeiraInstalacao $primeiraInstalacao) {
         Start-Process -FilePath $executavelInstalado -WorkingDirectory $destinoCompleto
     }
     else {
-        Write-Host 'O TSCDesk nao foi aberto. Use o atalho quando desejar.'
+        Write-Host 'O TsCIDE nao foi aberto. Use o atalho quando desejar.'
     }
 }
 finally {

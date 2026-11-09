@@ -1881,6 +1881,17 @@ impl QuixiEngine {
         if clean_path == "/api/quixi/providers" {
             return Self::json_resp(200, &self.provider_manager.get_public_state());
         }
+        if clean_path == "/api/quixi/credential-vault/configure" && method == "POST" {
+            return Self::json_resp(200, &self.provider_manager.configure_master_vault(&body_json));
+        }
+        if clean_path == "/api/quixi/credential-vault/unlock" && method == "POST" {
+            let result = self.provider_manager.unlock_master_vault(&body_json);
+            if result.get("error").is_none() { self.sync_sessions_to_connected_models(); }
+            return Self::json_resp(200, &result);
+        }
+        if clean_path == "/api/quixi/credential-vault/lock" && method == "POST" {
+            return Self::json_resp(200, &self.provider_manager.lock_master_vault());
+        }
         if clean_path == "/api/quixi/providers/save" {
             let res = self.provider_manager.save_provider(&body_json);
             if res.get("error").is_none() { self.sync_sessions_to_connected_models(); }

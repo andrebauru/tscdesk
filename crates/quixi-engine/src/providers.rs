@@ -156,7 +156,7 @@ pub struct PendingOAuthSession {
 pub struct ProviderManager {
     pub config_path: PathBuf,
     credential_error: RwLock<Option<String>>,
-    credential_load_failed: bool,
+    credential_load_failed: RwLock<bool>,
     persist_lock: parking_lot::Mutex<()>,
     pub state: RwLock<ProvidersStateFile>,
     pub pending_oauth: RwLock<HashMap<String, PendingOAuthSession>>,
@@ -190,7 +190,7 @@ impl ProviderManager {
 
         let state = loaded.unwrap_or(default_catalog);
         let mgr = Self {
-            credential_load_failed: credential_error.is_some(),
+            credential_load_failed: RwLock::new(credential_error.is_some()),
             credential_error: RwLock::new(credential_error),
             persist_lock: parking_lot::Mutex::new(()),
             config_path,
@@ -1210,7 +1210,7 @@ impl ProviderManager {
 
     pub fn persist(&self) {
         let _writer=self.persist_lock.lock();
-        if self.credential_load_failed {return;}
+        if *self.credential_load_failed.read() {return;}
         let result = self.persist_state(&self.state.read());
         *self.credential_error.write() = result.err();
     }
@@ -1274,6 +1274,7 @@ impl ProviderManager {
         }).collect();
         json!({
             "credentialStorageError": self.credential_error.read().clone(),
+            "credentialVault": crate::credentials::master_status(&self.config_path),
             "onboardingCompleted": st.onboarding_completed && configured_count > 0,
             "hasConfiguredProvider": configured_count > 0,
             "configuredCount": configured_count,
@@ -1287,7 +1288,7 @@ impl ProviderManager {
     }
 
     pub fn save_provider(&self, body: &Value) -> Value {
-        if self.credential_load_failed {return json!({"error":"Unlock the system credential store and restart QuixiDesk. Existing credentials were preserved."});}
+        if *self.credential_load_failed.read() {return json!({"error":"Unlock the credential vault before changing providers. Existing credentials were preserved."});}
         let provider_id = body
             .get("providerId")
             .or_else(|| body.get("id"))
@@ -1487,6 +1488,73 @@ impl ProviderManager {
             .then(|| self.test_provider(&json!({"providerId":provider_id})));
         let mut result = self.get_public_state();
         if let Some(discovery) = discovery { result["modelDiscovery"] = discovery; }
+        result
+    }
+
+    /// Configures or changes the password that protects the local credential fallback.
+    pub fn configure_master_vault(&self, body: &Value) -> Value {
+        let password = body.get("password").and_then(Value::as_str).unwrap_or("");
+        let current = body.get("currentPassword").and_then(Value::as_str).filter(|value| !value.is_empty());
+        match crate::credentials::configure_master(&self.config_path, password, current) {
+            Ok(()) => {
+                if !self.config_path.exists() {
+                    *self.credential_load_failed.write() = false;
+                    *self.credential_error.write() = None;
+                }
+                if *self.credential_load_failed.read() {
+                    return json!({"error":"The master password was configured, but existing credentials are still protected only by the unavailable operating-system vault. Unlock the system vault once, restart TSCDesk, and configure the master password again to migrate them without data loss."});
+                }
+                if !*self.credential_load_failed.read() {
+                    let _writer = self.persist_lock.lock();
+                    if let Err(error) = self.persist_state(&self.state.read()) {
+                        *self.credential_error.write() = Some(error.clone());
+                        return json!({"error":format!("Master password was configured, but provider credentials could not be migrated: {error}")});
+                    }
+                    *self.credential_error.write() = None;
+                }
+                json!({"ok":true,"vault":crate::credentials::master_status(&self.config_path)})
+            }
+            Err(error) => json!({"error":error}),
+        }
+    }
+
+    /// Unlocks the local vault and reloads provider credentials without restarting the app.
+    pub fn unlock_master_vault(&self, body: &Value) -> Value {
+        let password = body.get("password").and_then(Value::as_str).unwrap_or("");
+        if let Err(error) = crate::credentials::unlock_master(&self.config_path, password) {
+            return json!({"error":error});
+        }
+        if self.config_path.exists() {
+            let loaded = fs::read_to_string(&self.config_path).map_err(|e|e.to_string())
+                .and_then(|raw| serde_json::from_str::<Value>(&raw).map_err(|e|e.to_string()))
+                .and_then(|document| crate::credentials::open(&self.config_path, document))
+                .and_then(|document| Self::merge_saved_state(Self::default_catalog(), &document)
+                    .ok_or_else(|| "Provider configuration is invalid.".to_string()));
+            match loaded {
+                Ok(state) => *self.state.write() = state,
+                Err(error) => {
+                    crate::credentials::lock_master(&self.config_path);
+                    *self.credential_error.write() = Some(error.clone());
+                    return json!({"error":error});
+                }
+            }
+        }
+        *self.credential_load_failed.write() = false;
+        *self.credential_error.write() = None;
+        let mut result = self.get_public_state();
+        result["ok"] = json!(true);
+        result
+    }
+
+    /// Removes the in-memory master key while leaving encrypted data intact.
+    pub fn lock_master_vault(&self) -> Value {
+        crate::credentials::lock_master(&self.config_path);
+        *self.state.write() = Self::default_catalog();
+        *self.credential_load_failed.write() = self.config_path.exists();
+        *self.credential_error.write() = self.config_path.exists()
+            .then(|| "The master-password vault is locked. Unlock it to load provider credentials.".to_string());
+        let mut result = self.get_public_state();
+        result["ok"] = json!(true);
         result
     }
 

@@ -42,9 +42,9 @@ cat > "$CONTENTS/Info.plist" <<EOF
     <key>CFBundleDevelopmentRegion</key>
     <string>en</string>
     <key>CFBundleDisplayName</key>
-    <string>QuixiDesk</string>
+    <string>TsCIDE</string>
     <key>CFBundleExecutable</key>
-    <string>QuixiDesk</string>
+    <string>TsCIDE</string>
     <key>CFBundleIconFile</key>
     <string>quixi.icns</string>
     <key>CFBundleIdentifier</key>
@@ -52,7 +52,7 @@ cat > "$CONTENTS/Info.plist" <<EOF
     <key>CFBundleInfoDictionaryVersion</key>
     <string>6.0</string>
     <key>CFBundleName</key>
-    <string>QuixiDesk</string>
+    <string>TsCIDE</string>
     <key>CFBundlePackageType</key>
     <string>APPL</string>
     <key>CFBundleShortVersionString</key>
@@ -66,19 +66,19 @@ cat > "$CONTENTS/Info.plist" <<EOF
     <key>NSSupportsAutomaticGraphicsSwitching</key>
     <true/>
     <key>NSAppleEventsUsageDescription</key>
-    <string>QuixiDesk drives AppleScript-enabled apps for its built-in AppleScript tools.</string>
+    <string>TsCIDE drives AppleScript-enabled apps for its built-in AppleScript tools.</string>
     <key>NSAppleMusicUsageDescription</key>
-    <string>QuixiDesk may read Apple Music state when a tool asks for it.</string>
+    <string>TsCIDE may read Apple Music state when a tool asks for it.</string>
     <key>NSCalendarsUsageDescription</key>
-    <string>QuixiDesk may read your calendars when a tool asks for it.</string>
+    <string>TsCIDE may read your calendars when a tool asks for it.</string>
     <key>NSContactsUsageDescription</key>
-    <string>QuixiDesk may read contacts when a tool asks for it.</string>
+    <string>TsCIDE may read contacts when a tool asks for it.</string>
     <key>NSMicrophoneUsageDescription</key>
-    <string>QuixiDesk records audio when you use voice input.</string>
+    <string>TsCIDE records audio when you use voice input.</string>
     <key>NSCameraUsageDescription</key>
-    <string>QuixiDesk uses the camera when you attach a photo or use a video tool.</string>
+    <string>TsCIDE uses the camera when you attach a photo or use a video tool.</string>
     <key>NSScreenCaptureDescription</key>
-    <string>QuixiDesk captures the screen for its Computer Use tools.</string>
+    <string>TsCIDE captures the screen for its Computer Use tools.</string>
     <key>NSPrincipalClass</key>
     <string>NSApplication</string>
     <key>NSAppTransportSecurity</key>
@@ -131,7 +131,7 @@ copy_res() { # copy_res <relative-path>
     fi
 }
 
-for res in quixi.icns quixi-logo.svg quixi-mark.svg \
+for res in quixi.icns quixi-logo.svg quixi-mark.svg tscide-icon.png tscide.ico \
            ui bootstrap bundled-skills \
            bundled-skills-extracted artifact-libs licenses; do
     copy_res "$res"

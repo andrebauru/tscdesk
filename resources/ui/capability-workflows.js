@@ -53,7 +53,7 @@
       await saveConfig(config);
     }
     function removeConnection(name) {
-      confirmDialog("Remove connection?", `Remove “${name}” from QuixiDesk? This does not uninstall the server or delete its files.`,
+      confirmDialog("Remove connection?", `Remove “${name}” from TsCIDE? This does not uninstall the server or delete its files.`,
         () => changeConnection(name, () => undefined), "Remove connection");
     }
 
@@ -252,7 +252,7 @@
         if (typeof Recognition !== "function") {
           dialog("Use system dictation", [el("p", {}, "This webview does not provide in-app speech recognition. You can still use your operating system’s dictation in the prompt."),
             el("p", {}, "Focus the prompt, then use Dictation from macOS Keyboard settings, Windows voice typing (Win+H), or your Linux desktop’s speech-input tool."),
-            el("p", { class: "hint" }, "QuixiDesk has not started recording audio.")]);
+            el("p", { class: "hint" }, "TsCIDE has not started recording audio.")]);
           return;
         }
         const notice = dialog("Dictate into your prompt", [el("p", {}, "Your webview’s speech service will transcribe your microphone. Depending on the platform, audio may be processed by an online speech service. Review the text before sending."),
@@ -339,13 +339,13 @@
       host.append(el("section", { class: "desktop-status" }, el("h2", {}, "Application & audio"), status,
         el("p", {}, engineVoice.tts ? "Read aloud uses the configured voice backend." : speechSupported() ? "Read aloud is available on assistant messages through the system webview’s speech service." : "Read aloud is not available: no voice backend is configured and this webview has no speech service."),
         el("p", {}, typeof recognitionConstructor() === "function" ? "Dictation is available from the composer. The speech service may require network access and microphone permission." : engineVoice.stt ? "Dictation uses the configured speech-to-text backend; audio does not leave this machine." : "Dictation is not available: no speech-to-text backend is configured and this webview has no recogniser."),
-        el("p", { class: "hint" }, "Keyboard shortcuts work while QuixiDesk is focused: ⌘/Ctrl+N new task · ⌘/Ctrl+K search · ⌘/Ctrl+, settings."),
-        button("View available releases", () => ctx.openExternal("https://github.com/QuixiAI/QuixiDesk/releases"), "quiet")));
+        el("p", { class: "hint" }, "Keyboard shortcuts work while TsCIDE is focused: ⌘/Ctrl+N new task · ⌘/Ctrl+K search · ⌘/Ctrl+, settings."),
+        button("View available releases", () => ctx.openExternal("https://github.com/andrebauru/tscdesk/releases"), "quiet")));
       const results = await Promise.allSettled([rpc("AboutWindow", "getBuildProps"), api("/api/quixi/storage/status")]);
       if (!status.isConnected) return;
       const version = results[0].status === "fulfilled" ? results[0].value?.appVersion : null;
       const storage = results[1].status === "fulfilled" ? results[1].value : null;
-      status.textContent = `${typeof version === "string" && version ? `QuixiDesk ${version}` : "Version unavailable"} · ${Array.isArray(storage?.issues) ? storage.issues.length ? "Storage needs attention — inspect Privacy & data before closing." : "No storage problems reported." : "Storage status unavailable."}`;
+      status.textContent = `${typeof version === "string" && version ? `TsCIDE ${version}` : "Version unavailable"} · ${Array.isArray(storage?.issues) ? storage.issues.length ? "Storage needs attention — inspect Privacy & data before closing." : "No storage problems reported." : "Storage status unavailable."}`;
     }
 
     return { renderTools, enhanceConnections, connectionEditor, renderDesktopStatus, dictationControl, readAloudControl, stopAudio };

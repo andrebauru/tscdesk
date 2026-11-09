@@ -52,7 +52,7 @@
     const preset = parsePreset(task?.cronExpression || "0 9 * * *");
     const initialProject = task?.spaceId ?? state.project ?? "";
     const name = el("input", { value: task?.displayName || task?.name || "", required: true, maxlength: 160, placeholder: "Morning project update", autocomplete: "off" });
-    const prompt = el("textarea", { rows: 4, value: task?.prompt || "", required: true, placeholder: "What should QuixiDesk do each time?" });
+    const prompt = el("textarea", { rows: 4, value: task?.prompt || "", required: true, placeholder: "What should TsCIDE do each time?" });
     const frequency = select(frequencies, preset.frequency, () => updateSchedule(), { "aria-label": "Frequency" });
     const time = el("input", { type: "time", value: preset.time, onInput: () => updateSchedule() });
     const day = select(days, preset.day, () => updateSchedule());
@@ -132,7 +132,7 @@
       save.disabled = true;
       try {
         if (!name.value.trim()) { name.focus(); throw new Error("Give this schedule a name."); }
-        if (!prompt.value.trim()) { prompt.focus(); throw new Error("Describe what QuixiDesk should do."); }
+        if (!prompt.value.trim()) { prompt.focus(); throw new Error("Describe what TsCIDE should do."); }
         const cron = expression();
         if (validPreview !== cron) {
           const check = await rpc("CoworkScheduledTasks", "previewSchedule", [cron]);
@@ -155,7 +155,7 @@
       field("Name", name), field("Instructions", prompt),
       el("div", { class: "schedule-time-grid" }, field("Frequency", frequency), timeField, dayField, minuteField), cronField, preview,
       contextDetails,
-      el("p", { class: "hint" }, "Keep QuixiDesk open for scheduled runs. Times missed while the app is closed or asleep are skipped, not replayed. Manual mode waits for approval before changes or commands."),
+      el("p", { class: "hint" }, "Keep TsCIDE open for scheduled runs. Times missed while the app is closed or asleep are skipped, not replayed. Manual mode waits for approval before changes or commands."),
       error,
     ]);
     d.append(el("div", { class: "form-actions schedule-editor-actions" }, button("Cancel", () => d.close(), "quiet"), save));

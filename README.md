@@ -1,13 +1,13 @@
-# TSCDesk
+# TsCIDE
 
 **Workspace de desenvolvimento com IA, escrito em Rust, para organizar projetos e trabalhar com arquivos, terminal e Git.**
 
-O **TSCDesk** reúne conversas com diferentes modelos, projetos locais, ferramentas MCP e artefatos HTML em um aplicativo de desktop, sem Electron. Você conecta um provedor de IA — incluindo RunPod Serverless — e autoriza as ações que podem ser executadas no seu projeto. O suporte ao **ChromeOS funciona pelo ambiente Linux (Crostini)** e permanece experimental; também há código para Linux, Windows e macOS.
+O **TsCIDE** reúne conversas com diferentes modelos, projetos locais, ferramentas MCP e artefatos HTML em um aplicativo de desktop, sem Electron. Você conecta um provedor de IA — incluindo RunPod Serverless — e autoriza as ações que podem ser executadas no seu projeto. O suporte ao **ChromeOS funciona pelo ambiente Linux (Crostini)** e permanece experimental; também há código para Linux, Windows e macOS.
 
 [![Licença MIT](https://img.shields.io/badge/Licen%C3%A7a-MIT-14B8A6.svg)](LICENSE)
 [![Rust](https://img.shields.io/badge/Desenvolvido%20em-Rust-0F172A?logo=rust)](Cargo.toml)
 
-> Este repositório se chama **tscdesk** e deriva do QuixiDesk. Os nomes internos dos crates, o executável `QuixiDesk`, os ícones e o diretório de dados `~/.quixi` foram preservados para manter compatibilidade. O instalador Linux oferece o comando e o atalho **TSCDesk**. A interface do aplicativo ainda está em inglês.
+> Este repositório se chama **tscdesk** e deriva do QuixiDesk. Os nomes internos dos crates, o executável `QuixiDesk` e o diretório de dados `~/.quixi` foram preservados para manter compatibilidade. A identidade visual, o atalho e a interface usam **TsCIDE**.
 
 ## O que este projeto faz, em palavras simples?
 
@@ -190,7 +190,7 @@ bash iniciar-chromeos.sh --instalar
 
 O `git pull --ff-only` evita criar merges automaticamente. Se houver alterações locais conflitantes ou divergência de histórico, ele pode recusar a atualização: preserve seu trabalho e resolva o conflito antes de reinstalar, sem usar `reset --hard` ou apagar a pasta.
 
-**Apenas baixar o código não atualiza os executáveis instalados**; a opção `--instalar` recompila e publica uma nova instalação local. `--reinstalar` prepara primeiro a nova versão, encerra somente processos executados a partir de releases gerenciadas, troca o release ativo e remove releases anteriores que tenham o marcador do instalador. Os dados em `~/.quixi`, suas chaves e os projetos não são apagados. Para investigar problemas de abertura, use `bash iniciar-chromeos.sh --check`.
+**Apenas baixar o código não atualiza os executáveis instalados**; a opção `--instalar` recompila e publica uma nova instalação local. `--reinstalar` prepara primeiro a nova versão, encerra somente processos executados a partir de releases gerenciadas, troca o release ativo e remove releases anteriores que tenham o marcador do instalador. Os dados em `~/.quixi`, suas chaves e os projetos não são apagados. No primeiro início após uma reinstalação, o TSCDesk solicita a criação de uma nova senha mestra; se já existir um cofre local, é preciso confirmar a senha anterior para trocá-la sem perder acesso. Para investigar problemas de abertura, use `bash iniciar-chromeos.sh --check`.
 
 O instalador também garante uma única linha controlada no arquivo de inicialização do shell (`~/.bashrc` no Bash):
 
@@ -217,7 +217,9 @@ No gerenciador gráfico, crie ou desbloqueie um chaveiro de senhas protegido por
 gnome-keyring-daemon --start --components=secrets
 ```
 
-Isso não desbloqueia automaticamente um chaveiro existente. Se a persistência falhar, o TSCDesk mantém a chave apenas na memória da sessão atual, informa que ela não foi salva e orienta a abrir o Seahorse/desbloquear o chaveiro antes de tentar novamente. **Não remova a senha do cofre, não use `QUIXI_TEST_PROFILE` para guardar credenciais reais e não crie um fallback de chave em texto puro.** Se já houver KWallet/Secret Service funcionando, mantenha-o em vez de substituir o serviço.
+Isso não desbloqueia automaticamente um chaveiro existente. Se o cofre nativo estiver indisponível, abra **Settings → Security** e crie uma senha mestra com pelo menos 12 caracteres. O TSCDesk usa Argon2id para derivar uma chave de proteção e AES-256-GCM para autenticar e criptografar uma chave aleatória estável; a senha não é salva. O arquivo `~/.quixi/credentials-master.json` contém somente sal, parâmetros e a chave criptografada, com permissão restrita. É necessário desbloquear esse cofre a cada novo processo do aplicativo. Se a senha for esquecida, as credenciais protegidas apenas por ele não podem ser recuperadas.
+
+O Secret Service continua preferencial. O fallback por senha mestra só é usado quando o cofre do sistema falha; chaves de API e tokens nunca são gravados em texto puro, argumentos de processo ou logs. Para trocar a senha, use **Settings → Security → Replace master password** e informe a senha atual. **Não remova a senha do cofre e não use `QUIXI_TEST_PROFILE` para guardar credenciais reais.**
 
 ### Problemas comuns
 
@@ -227,7 +229,7 @@ Isso não desbloqueia automaticamente um chaveiro existente. Se a persistência 
 | Pacote WebKit ausente | Use uma distribuição com `libwebkit2gtk-4.1-dev`; apenas WebKitGTK 4.0 não basta. O recurso `linux-body` exige WebKitGTK 2.40+. |
 | Build encerrado com `Killed` | Pode ser falta de memória. Feche apps e repita com `--jobs 1`. |
 | Tela em branco/erro gráfico | Confira os logs no Terminal e atualize os pacotes. Como teste, execute `GDK_BACKEND=x11 "$HOME/.local/bin/tscdesk"` quando houver XWayland; não desative o sandbox. |
-| Credenciais não são salvas | Verifique o Secret Service e desbloqueie o chaveiro. |
+| Credenciais não são salvas | Desbloqueie o Secret Service ou configure/desbloqueie o cofre em **Settings → Security**. |
 | Pasta do ChromeOS não aparece | Compartilhe-a com Linux no app Arquivos e informe seu caminho sob `/mnt/chromeos`. |
 | Controle de mouse/screenshot não funciona | O backend pode não estar disponível no Crostini. Não presuma acesso ao desktop hospedeiro nem tente elevar permissões automaticamente. |
 
@@ -312,7 +314,7 @@ powershell -ExecutionPolicy Bypass -File .\instalar-windows.ps1
 
 O script detecta uma instalação nova, pede consentimento e instala somente os pré-requisitos ausentes por canais oficiais: Rustup/Rust stable, Microsoft Visual Studio Build Tools com C++/Windows SDK e WebView2 Evergreen. O Build Tools pode solicitar elevação UAC e ocupar vários gigabytes. Depois, compila a versão release, instala o aplicativo somente para o usuário atual em `%LOCALAPPDATA%\Programs\TSCDesk` e cria atalhos no Desktop e no menu Iniciar.
 
-Na primeira instalação, o script pergunta se deseja abrir o TSCDesk. Pressionar Enter ou responder `N` encerra sem abrir. Em automações, escolha explicitamente `-AbrirAoFinal` ou `-NaoAbrirAoFinal`.
+Na primeira instalação, o script pergunta se deseja abrir o TSCDesk. Pressionar Enter ou responder `N` encerra sem abrir. Em automações, escolha explicitamente `-AbrirAoFinal` ou `-NaoAbrirAoFinal`. Ao executar o instalador novamente sobre uma instalação gerenciada, a próxima abertura solicita uma nova senha mestra; os dados e o cofre anterior são preservados e a troca exige a senha atual.
 
 Para instalar e abrir imediatamente:
 
