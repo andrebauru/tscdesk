@@ -229,9 +229,10 @@ try:
     version = version_match.group(1) if version_match else 'unknown'
     wrapper = ('#!/usr/bin/env bash\n' + launcher_mark + '\nset -euo pipefail\nexec ' +
                shlex.quote(str(prefix / 'current/bin/launch-linux.sh')) + ' "$@"\n').encode()
-    # A fixed executable also allows '=' in the script path (forbidden in an Exec executable).
+    # env launches the managed app entry without a terminal or persistent shell process.
+    # Keeping a fixed executable also supports launcher paths containing reserved Exec characters.
     entry = ('[Desktop Entry]\nType=Application\nName=TsCIDE\n' + desktop_mark +
-             '\nExec=/bin/bash ' + desktop_exec(str(launcher)) + '\nIcon=' +
+             '\nExec=/usr/bin/env -- ' + desktop_exec(str(launcher)) + '\nIcon=' +
              desktop_string(str(prefix / 'current/resources' / icon)) +
              '\nTerminal=false\nStartupWMClass=QuixiDesk\nCategories=Development;\n').encode()
     prefix.mkdir(parents=True, exist_ok=True)
@@ -280,6 +281,7 @@ try:
             remove_old_managed_releases(release)
     print('Installed TsCIDE at ' + str(prefix))
     print('Launch: ' + str(launcher) + ' (add ~/.local/bin to PATH if necessary)')
+    print('ChromeOS: open Launcher > TsCIDE, then right-click and select Pin to shelf.')
 except (OSError, ValueError, RuntimeError) as exc:
     print('install-linux: ' + str(exc), file=sys.stderr)
     sys.exit(1)

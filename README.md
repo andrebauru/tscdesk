@@ -62,7 +62,8 @@ Se você já tem o projeto, não repita o clone: consulte [como atualizar](#como
 
 Depois de instalar:
 
-- Abra pelo atalho **TSCDesk** no menu de aplicativos Linux do ChromeOS, ou execute `"$HOME/.local/bin/tscdesk"` no Terminal.
+- Abra o Launcher do ChromeOS, encontre **TsCIDE**, clique com o botão direito e selecione **Fixar na estante**. Depois disso, basta usar o ícone: o ChromeOS inicia o ambiente Linux automaticamente, sem abrir nem manter uma janela do Terminal.
+- Como alternativa para diagnóstico, execute `"$HOME/.local/bin/tscdesk"` no Terminal.
 - Entre em **Settings → Providers**, configure o provedor e escolha o modelo. Para RunPod, informe Endpoint ID, API Key e modelo conforme o [guia abaixo](#runpod-serverless-queue-based).
 - Selecione uma pasta de projeto para tarefas com arquivos e comece em modo **Manual**. O RunPod atual é chat-only, sem ferramentas de edição/terminal habilitadas.
 - Envie `FINAL` isoladamente para pausar a IA e `INICIAR` para permitir novos pedidos. A IDE continua aberta; isso não é um comando de desligamento da GPU.
@@ -74,6 +75,8 @@ O script **não configura abertura automática ao ligar ou entrar no ChromeOS**.
 O TSCDesk roda **como aplicativo Linux dentro do Crostini**, o ambiente Linux oferecido pelo ChromeOS. Não é extensão do Chrome, PWA, APK nem um aplicativo executado diretamente no sistema hospedeiro.
 
 - Use o ambiente Debian do app **Terminal** do Chromebook; não é necessário ativar o modo desenvolvedor do dispositivo.
+- O instalador e a reinstalação publicam um atalho gráfico com `Terminal=false`. Ao abrir o **TsCIDE** pelo Launcher ou pela estante, o ChromeOS inicia o Crostini automaticamente; não é preciso abrir o Terminal antes nem deixá-lo em execução.
+- A VM e o contêiner Linux continuam necessários enquanto o aplicativo estiver aberto e consomem recursos próprios. Eles podem ser encerrados pelo menu do aplicativo Terminal com **Desligar Linux** quando nenhum aplicativo Linux estiver em uso.
 - A janela utiliza a integração gráfica existente do Crostini (Sommelier, Wayland ou XWayland). O launcher não substitui as variáveis gráficas da sessão.
 - Os arquivos do ambiente Linux ficam disponíveis normalmente. Para acessar uma pasta do ChromeOS, abra o app **Arquivos**, clique nela com o botão direito e escolha **Compartilhar com Linux**. As pastas compartilhadas aparecem sob `/mnt/chromeos`.
 - O instalador não configura controle privilegiado de entrada, não altera `/dev/uinput` e não desativa o sandbox do WebKit.
@@ -165,7 +168,9 @@ O instalador reconhece somente instalações que ele gerencia. Conflitos com arq
 
 ### 3. Abrir o aplicativo
 
-Use o atalho **TSCDesk** no lançador do ChromeOS, ou execute no Terminal:
+Use o atalho **TsCIDE** no Launcher do ChromeOS. Para mantê-lo na barra inferior, clique com o botão direito no ícone e selecione **Fixar na estante**. O atalho abre a janela diretamente, sem manter um processo de Terminal intermediário.
+
+Para diagnóstico, também é possível executar no Terminal:
 
 ```bash
 "$HOME/.local/bin/tscdesk"

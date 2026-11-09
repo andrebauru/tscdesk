@@ -3835,7 +3835,7 @@
         ),
         button(
           "Open project website",
-          () => openExternal("https://github.com/andrebauru/tscdesk"),
+          () => openExternal("https://bytetsc.jp"),
           "quiet",
         ),
       );

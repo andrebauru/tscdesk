@@ -426,7 +426,8 @@ Path(os.environ['BUILD_LOG']).write_text(json.dumps(sys.argv[1:]))
         command = shlex.split(unescape(lines["Exec"]))
         # shlex retains escapes of $ and `; Exec explicitly unescapes these too.
         command = [arg.replace('\\$', '$').replace('\\`', '`').replace('%%', '%') for arg in command]
-        self.assertEqual(command, ["/bin/bash", str(self.launcher)])
+        self.assertEqual(command, ["/usr/bin/env", "--", str(self.launcher)])
+        self.assertEqual(lines["Terminal"], "false")
         self.assertEqual(unescape(lines["Icon"]), str(self.prefix / "current/resources/quixi-mark.svg"))
 
     def test_options_and_architecture(self):
