@@ -8,7 +8,7 @@ Usage: scripts/install-linux.sh [options]
   --help, -h       Show this help (also permitted as root)
   --skip-deps      Do not run apt; dependencies must already be installed
   --skip-build     Package existing target/release binaries; do not run Rust
-  --reinstall      Replace prior managed releases after the new release is ready
+  --reinstall      Reinstall/update and replace prior managed releases safely
   --jobs N         Cargo jobs (default: CARGO_BUILD_JOBS, otherwise 2)
   --prefix PATH    Absolute user-owned install path (default: ~/.local/opt/tscdesk)
   --yes            Consent to sudo apt and Rust stable installation/update
@@ -298,20 +298,13 @@ install_dependencies() {
     confirm 'Will use sudo apt-get update/install for system dependencies. No input permission or sandbox changes.'
     sudo apt-get update
     sudo apt-get install --no-install-recommends -y build-essential pkg-config libgtk-3-dev \
-        libwebkit2gtk-4.1-dev curl git ca-certificates perl python3 dbus-user-session \
+        libwebkit2gtk-4.1-dev curl git ca-certificates perl python3 dbus-user-session dbus-bin \
         gnome-keyring zenity libsecret-tools xdg-utils
 }
 
-# Adds one controlled PATH line without replacing shell configuration.
-configure_user_path() {
-    local shell_name config line
-    shell_name="$(basename -- "${SHELL:-bash}")"
-    case "$shell_name" in
-        bash) config="$HOME/.bashrc" ;;
-        zsh) config="$HOME/.zshrc" ;;
-        *) config="$HOME/.profile" ;;
-    esac
-    line='export PATH="$HOME/.local/bin:$PATH"'
+# Adds one controlled PATH line per shell file without replacing configuration.
+append_user_path() {
+    local config="$1" line="$2"
     if [[ -L "$config" ]]; then
         printf 'install-linux: warning: PATH was not changed because %s is a symlink.\n' "$config" >&2
         return
@@ -330,37 +323,24 @@ configure_user_path() {
     else
         printf 'install-linux: PATH is already configured in %s\n' "$config"
     fi
+}
+configure_user_path() {
+    local shell_name line config
+    local -a configs
+    shell_name="$(basename -- "${SHELL:-bash}")"
+    case "$shell_name" in
+        bash) configs=("$HOME/.bashrc" "$HOME/.profile") ;;
+        zsh) configs=("$HOME/.zshrc") ;;
+        *) configs=("$HOME/.profile") ;;
+    esac
+    line="export PATH=\"\$HOME/.local/bin:\$PATH\""
+    for config in "${configs[@]}"; do
+        append_user_path "$config" "$line"
+    done
     export PATH="$HOME/.local/bin:$PATH"
-    printf 'install-linux: open a new Terminal or run: source %q\n' "$config"
+    printf 'install-linux: open a new Terminal or run: source %q\n' "${configs[0]}"
 }
 
-# Marks the next launch without following user-controlled symlinks.
-request_master_password_setup() {
-    python3 - "$HOME/.quixi" <<'PY'
-import os
-import sys
-from pathlib import Path
-
-directory = Path(sys.argv[1])
-if directory.is_symlink():
-    raise SystemExit('install-linux: refusing symlinked credential data directory')
-directory.mkdir(mode=0o700, parents=True, exist_ok=True)
-if not directory.is_dir() or directory.stat().st_uid != os.getuid():
-    raise SystemExit('install-linux: credential data directory is not owned by the current user')
-marker = directory / 'master-password-setup-required'
-if marker.is_symlink():
-    raise SystemExit('install-linux: refusing symlinked master-password marker')
-temporary = directory / f'.master-password-setup-{os.getpid()}.tmp'
-fd = os.open(temporary, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
-try:
-    os.write(fd, b'Set a new master password after reinstalling TsCIDE.\n')
-    os.fsync(fd)
-finally:
-    os.close(fd)
-os.replace(temporary, marker)
-PY
-    printf 'install-linux: TsCIDE will request a new master password on first launch.\n'
-}
 DEPS_INSTALLED=0
 if ! command -v python3 >/dev/null 2>&1; then
     (( ! SKIP_DEPS )) || fail 'python3 is required; rerun without --skip-deps so it can be installed.'
@@ -411,7 +391,6 @@ for license in LICENSE LICENCE; do
 done
 if (( REINSTALL )); then
     manage_install reinstall "$TEMP_STAGE/payload"
-    request_master_password_setup
 else
     manage_install publish "$TEMP_STAGE/payload"
 fi

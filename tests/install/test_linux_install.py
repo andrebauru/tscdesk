@@ -71,6 +71,7 @@ Path(os.environ['CAPTURE']).write_text(json.dumps({'args': sys.argv[1:], 'env': 
         self.capture = self.root / "capture.json"
         self.forbidden = self.root / "forbidden.log"
         self.dbus_log = self.root / "dbus.log"
+        self.keyring_log = self.root / "keyring.log"
         self.env = os.environ.copy()
         for name in ("DISPLAY", "WAYLAND_DISPLAY", "DBUS_SESSION_BUS_ADDRESS", "QUIXI_WORKSPACE",
                      "QUIXI_RESOURCES_DIR", "QUIXI_TEST_PROFILE", "CARGO_BUILD_JOBS", "XDG_DATA_HOME",
@@ -80,10 +81,11 @@ Path(os.environ['CAPTURE']).write_text(json.dumps({'args': sys.argv[1:], 'env': 
                         SHELL="/bin/bash",
                         PATH=str(self.bin) + ":" + os.environ["PATH"], CAPTURE=str(self.capture),
                         FORBIDDEN=str(self.forbidden), DBUS_LOG=str(self.dbus_log),
-                        TMPDIR=str(self.root))
+                        KEYRING_LOG=str(self.keyring_log), TMPDIR=str(self.root))
         for name in ("sudo", "apt-get", "cargo", "rustup", "curl"):
             self.command(name, '#!/bin/sh\necho "$0 $*" >> "$FORBIDDEN"\nexit 99\n')
         self.command("dbus-send", "#!/bin/sh\necho 'boolean true'\n")
+        self.command("gnome-keyring-daemon", '#!/bin/sh\nprintf "%s\\n" "$*" >> "$KEYRING_LOG"\n')
         self.command("dbus-run-session", '''#!/bin/sh
 echo once >> "$DBUS_LOG"
 [ "$1" = -- ] || exit 97
@@ -149,8 +151,12 @@ exec "$@"
         self.install()
         old = self.prefix / os.readlink(self.prefix / "current")
         (old / "old-release-only").write_text("remove with managed release")
+        (self.home / ".quixi/providers.json").write_text("encrypted provider fixture")
+        (self.home / ".quixi/credentials-master.json").write_text("wrapped key fixture")
         self.install("--reinstall")
-        self.assertTrue((self.home / ".quixi" / "master-password-setup-required").is_file())
+        self.assertFalse((self.home / ".quixi" / "master-password-setup-required").exists())
+        self.assertEqual((self.home / ".quixi/providers.json").read_text(), "encrypted provider fixture")
+        self.assertEqual((self.home / ".quixi/credentials-master.json").read_text(), "wrapped key fixture")
         current = (self.prefix / "current").resolve()
         self.assertNotEqual(old, current)
         self.assertFalse(old.exists())
@@ -178,11 +184,20 @@ exec "$@"
         first = self.install()
         second = self.install()
         line = 'export PATH="$HOME/.local/bin:$PATH"'
-        bashrc = self.home / ".bashrc"
-        self.assertEqual(bashrc.read_text().splitlines().count(line), 1)
+        for name in (".bashrc", ".profile"):
+            self.assertEqual((self.home / name).read_text().splitlines().count(line), 1)
         self.assertIn("added ~/.local/bin", first.stdout)
         self.assertIn("already configured", second.stdout)
         self.assertIn("source", second.stdout)
+
+    def test_login_shell_uses_profile_without_duplicating_path(self):
+        env = self.env.copy()
+        env["SHELL"] = "/bin/dash"
+        self.install(env=env)
+        self.install(env=env)
+        line = 'export PATH="$HOME/.local/bin:$PATH"'
+        self.assertEqual((self.home / ".profile").read_text().splitlines().count(line), 1)
+        self.assertFalse((self.home / ".bashrc").exists())
 
     def test_foreign_launcher_conflict_before_install(self):
         self.launcher.parent.mkdir(parents=True)
@@ -323,6 +338,7 @@ Path(os.environ['BUILD_LOG']).write_text(json.dumps(sys.argv[1:]))
         self.assertNotIn("QUIXI_TEST_PROFILE", env)
         self.assertNotIn("WEBKIT_DISABLE_SANDBOX_THIS_IS_DANGEROUS", env)
         self.assertFalse(self.dbus_log.exists())
+        self.assertFalse(self.keyring_log.exists(), "an available Secret Service must not be restarted")
         custom_resources = self.root / "custom resources"
         (custom_resources / "ui").mkdir(parents=True)
         (custom_resources / "ui/index.html").write_text("custom UI")
@@ -375,17 +391,20 @@ Path(os.environ['BUILD_LOG']).write_text(json.dumps(sys.argv[1:]))
         self.assertEqual(address, "unix:path=" + str(runtime / "bus").replace(" ", "%20"))
         self.assertFalse(self.dbus_log.exists())
 
-    def test_missing_dbus_runs_once_and_secret_service_only_warns(self):
+    def test_missing_dbus_runs_once_and_secret_service_is_started_without_passwords(self):
         self.install()
         self.command("dbus-send", "#!/bin/sh\necho 'boolean false'\n")
         result = self.launch("arg", WAYLAND_DISPLAY="wayland-0")
-        self.assertIn("warning: Secret Service", result.stderr)
         self.assertEqual(self.dbus_log.read_text().splitlines(), ["once"])
         self.assertEqual(json.loads(self.capture.read_text())["env"]["DBUS_SESSION_BUS_ADDRESS"],
                          "fixture:private")
         result = self.launch(DISPLAY=":0", DBUS_SESSION_BUS_ADDRESS="fixture:existing")
-        self.assertIn("Seahorse", result.stderr)
+        self.assertIn("master-password vault", result.stderr)
+        self.assertNotIn("Seahorse", result.stderr)
         self.assertEqual(self.dbus_log.read_text().splitlines(), ["once"])
+        starts = self.keyring_log.read_text().splitlines()
+        self.assertEqual(starts, ["--start --components=secrets", "--start --components=secrets"])
+        self.assertNotIn("password", " ".join(starts).lower())
 
     def test_desktop_quoting_special_paths(self):
         self.install()

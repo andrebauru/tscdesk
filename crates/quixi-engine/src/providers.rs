@@ -1239,9 +1239,29 @@ impl ProviderManager {
             "subagentModelUserSelected": st.subagent_model_user_selected,
             "providers": providers_disk,
         });
+        let expected = disk_json.clone();
         crate::credentials::seal(&self.config_path,disk_json).and_then(|document| {
             let bytes=serde_json::to_vec_pretty(&document).map_err(|e|e.to_string())?;
-            crate::storage::atomic_write(&self.config_path,&bytes).map_err(|e|e.to_string())
+            crate::storage::atomic_write_verified(&self.config_path,&bytes, |temporary| {
+                let document: Value = serde_json::from_slice(
+                    &fs::read(temporary).map_err(|e| e.to_string())?,
+                ).map_err(|e| e.to_string())?;
+                let reopened = crate::credentials::open(&self.config_path, document)?;
+                for provider in expected["providers"].as_array().into_iter().flatten() {
+                    let id = provider["id"].as_str().unwrap_or_default();
+                    let saved = reopened["providers"].as_array().into_iter().flatten()
+                        .find(|candidate| candidate["id"].as_str() == Some(id));
+                    for field in ["apiKeyRaw", "oauthAccessToken", "oauthRefreshToken"] {
+                        let secret = provider[field].as_str().unwrap_or_default();
+                        if !secret.is_empty()
+                            && saved.and_then(|candidate| candidate[field].as_str()) != Some(secret)
+                        {
+                            return Err("Credential persistence verification failed; the previous saved configuration was preserved.".into());
+                        }
+                    }
+                }
+                Ok(())
+            })
         })
     }
 
@@ -1272,8 +1292,20 @@ impl ProviderManager {
             }
             public
         }).collect();
+        let credential_error = self.credential_error.read().clone();
+        let persistence_status = if credential_error.is_some() {
+            "session-only"
+        } else if self.config_path.is_file() {
+            "saved"
+        } else {
+            "not-configured"
+        };
         json!({
-            "credentialStorageError": self.credential_error.read().clone(),
+            "credentialStorageError": credential_error,
+            "credentialPersistence": {
+                "status": persistence_status,
+                "verified": persistence_status == "saved"
+            },
             "credentialVault": crate::credentials::master_status(&self.config_path),
             "onboardingCompleted": st.onboarding_completed && configured_count > 0,
             "hasConfiguredProvider": configured_count > 0,
@@ -1482,7 +1514,11 @@ impl ProviderManager {
         }
         drop(st);
         self.persist();
-        if let Some(error)=self.credential_error.read().clone(){return json!({"error":format!("Provider is available for this session, but credentials were not saved: {error}")});}
+        if let Some(error)=self.credential_error.read().clone(){
+            let mut result = self.get_public_state();
+            result["error"] = json!(format!("Provider is available for this session, but credentials were not saved: {error}"));
+            return result;
+        }
 
         let discovery = body.get("refreshModels").and_then(Value::as_bool).unwrap_or(false)
             .then(|| self.test_provider(&json!({"providerId":provider_id})));
@@ -4793,6 +4829,34 @@ mod runpod_configuration_tests {
         let stored=fs::read_to_string(&path).unwrap();assert!(!stored.contains("test-secret-123"));assert!(stored.contains("encryptedCredentials"));
         let manager=ProviderManager::new(&root);assert_eq!(manager.state.read().providers.iter().find(|p|p.id=="custom").unwrap().api_key_raw,"test-secret-123");drop(manager);fs::remove_dir_all(root).unwrap();
     }
+    #[test] fn provider_save_verifies_restart_and_reports_session_only_failures(){
+        let root=std::env::temp_dir().join(format!("quixi-provider-verified-{}",Uuid::new_v4()));
+        fs::create_dir_all(&root).unwrap();
+        let manager=ProviderManager::new(&root);
+        let saved=manager.save_provider(&json!({"providerId":"custom","baseUrl":"http://127.0.0.1:1/v1","apiFormat":"openai","apiKey":"synthetic-provider-key","selectedModel":"fixture-model"}));
+        assert!(saved.get("error").is_none(),"{saved}");
+        assert_eq!(saved["credentialPersistence"]["status"],"saved");
+        assert_eq!(saved["credentialPersistence"]["verified"],true);
+        let disk=fs::read_to_string(&manager.config_path).unwrap();
+        assert!(!disk.contains("synthetic-provider-key"));
+        drop(manager);
+        let manager=ProviderManager::new(&root);
+        assert_eq!(manager.state.read().providers.iter().find(|p|p.id=="custom").unwrap().api_key_raw,"synthetic-provider-key");
+
+        let key_path=root.join("test-credentials.key");
+        let original_key=fs::read(&key_path).unwrap();
+        let disk_before=fs::read(&manager.config_path).unwrap();
+        fs::write(&key_path,b"invalid isolated fixture key").unwrap();
+        let failed=manager.save_provider(&json!({"providerId":"custom","apiKey":"replacement-never-log-this-fixture"}));
+        assert_eq!(failed["credentialPersistence"]["status"],"session-only");
+        assert!(failed["error"].as_str().unwrap().contains("only for this session") || failed["error"].as_str().unwrap().contains("available for this session"));
+        assert!(!failed.to_string().contains("replacement-never-log-this-fixture"));
+        assert_eq!(fs::read(&manager.config_path).unwrap(),disk_before);
+        fs::write(key_path,original_key).unwrap();
+        drop(manager);
+        fs::remove_dir_all(root).unwrap();
+    }
+
     #[test] fn unreadable_or_tampered_credentials_never_overwrite_existing_file(){
         let root=std::env::temp_dir().join(format!("quixi-provider-bad-{}",Uuid::new_v4()));fs::create_dir_all(&root).unwrap();let path=root.join("providers.json");
         for raw in ["{broken".to_string(),json!({"encryptedCredentials":{"version":1,"nonce":"invalid","ciphertext":"invalid"}}).to_string()]{

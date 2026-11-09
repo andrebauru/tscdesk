@@ -190,9 +190,9 @@ bash iniciar-chromeos.sh --instalar
 
 O `git pull --ff-only` evita criar merges automaticamente. Se houver alterações locais conflitantes ou divergência de histórico, ele pode recusar a atualização: preserve seu trabalho e resolva o conflito antes de reinstalar, sem usar `reset --hard` ou apagar a pasta.
 
-**Apenas baixar o código não atualiza os executáveis instalados**; a opção `--instalar` recompila e publica uma nova instalação local. `--reinstalar` prepara primeiro a nova versão, encerra somente processos executados a partir de releases gerenciadas, troca o release ativo e remove releases anteriores que tenham o marcador do instalador. Os dados em `~/.quixi`, suas chaves e os projetos não são apagados. No primeiro início após uma reinstalação, o TSCDesk solicita a criação de uma nova senha mestra; se já existir um cofre local, é preciso confirmar a senha anterior para trocá-la sem perder acesso. Para investigar problemas de abertura, use `bash iniciar-chromeos.sh --check`.
+**Apenas baixar o código não atualiza os executáveis instalados**; a opção `--instalar` recompila e publica uma nova instalação local. `--reinstalar` prepara primeiro a nova versão, encerra somente processos executados a partir de releases gerenciadas, troca o release ativo e remove releases anteriores que tenham o marcador do instalador. Os dados em `~/.quixi`, suas chaves e os projetos não são apagados, e a reinstalação não exige recriar a senha mestra. Para investigar problemas de abertura, use `bash iniciar-chromeos.sh --check`.
 
-O instalador também garante uma única linha controlada no arquivo de inicialização do shell (`~/.bashrc` no Bash):
+O instalador também garante uma única linha controlada em `~/.bashrc` e `~/.profile` no Bash (ou no arquivo correspondente do shell detectado):
 
 ```bash
 export PATH="$HOME/.local/bin:$PATH"
@@ -200,26 +200,17 @@ export PATH="$HOME/.local/bin:$PATH"
 
 Abra um novo Terminal ou execute `source ~/.bashrc`. Confirme com `command -v tscdesk`, que deve apontar para `~/.local/bin/tscdesk`.
 
-### Cofre de credenciais: passo importante no Crostini
+### Cofre de credenciais no Crostini
 
-As chaves de provedores são criptografadas com AES-256-GCM. No Linux, a chave de criptografia depende de um **Secret Service desbloqueado**, por exemplo GNOME Keyring. Instalar o pacote sozinho não garante que o cofre esteja pronto: o login do ChromeOS não necessariamente desbloqueia o cofre do container.
+As chaves de provedores são criptografadas com AES-256-GCM. No Linux, a chave de criptografia fica preferencialmente no **Secret Service**, por exemplo GNOME Keyring. O TSCDesk usa uma coleção própria chamada `TSCDesk`, criada pelo backend quando necessário; portanto, não depende da coleção `default`, que pode não existir em sessões mínimas do Crostini. Entradas antigas na coleção padrão continuam legíveis e são migradas sem apagar a original.
 
-Se o aplicativo não conseguir salvar/desbloquear credenciais:
+O instalador inclui `gnome-keyring`, D-Bus e as ferramentas necessárias. Ao abrir o aplicativo, o launcher tenta iniciar `gnome-keyring-daemon --start --components=secrets` na **mesma sessão D-Bus** do TSCDesk, inclusive quando cria uma sessão privada. Nenhuma senha é passada por comando ou registrada em log. Depois de salvar um provedor, o aplicativo lê a credencial de volta e verifica o arquivo criptografado antes de confirmar o armazenamento persistente.
 
-```bash
-sudo apt-get install seahorse
-seahorse
-```
-
-No gerenciador gráfico, crie ou desbloqueie um chaveiro de senhas protegido por senha e defina-o como padrão. Execute o aplicativo na **mesma sessão D-Bus** do serviço. Para iniciar o componente de segredos na sessão atual, quando necessário:
-
-```bash
-gnome-keyring-daemon --start --components=secrets
-```
-
-Isso não desbloqueia automaticamente um chaveiro existente. Se o cofre nativo estiver indisponível, abra **Settings → Security** e crie uma senha mestra com pelo menos 12 caracteres. O TSCDesk usa Argon2id para derivar uma chave de proteção e AES-256-GCM para autenticar e criptografar uma chave aleatória estável; a senha não é salva. O arquivo `~/.quixi/credentials-master.json` contém somente sal, parâmetros e a chave criptografada, com permissão restrita. É necessário desbloquear esse cofre a cada novo processo do aplicativo. Se a senha for esquecida, as credenciais protegidas apenas por ele não podem ser recuperadas.
+Se o cofre nativo continuar indisponível ou bloqueado, o formulário do provedor informa que a chave está disponível **apenas nesta sessão** e oferece abrir **Settings → Security**. Nesse cofre alternativo, crie uma senha mestra com pelo menos 12 caracteres. O TSCDesk usa Argon2id para derivar a chave de proteção e AES-256-GCM para criptografar e autenticar uma chave aleatória estável; a senha não é salva. O arquivo `~/.quixi/credentials-master.json` contém somente sal, parâmetros e a chave protegida. É necessário desbloquear esse cofre a cada novo processo do aplicativo. Se a senha for esquecida, as credenciais protegidas apenas por ele não podem ser recuperadas.
 
 O Secret Service continua preferencial. O fallback por senha mestra só é usado quando o cofre do sistema falha; chaves de API e tokens nunca são gravados em texto puro, argumentos de processo ou logs. Para trocar a senha, use **Settings → Security → Replace master password** e informe a senha atual. **Não remova a senha do cofre e não use `QUIXI_TEST_PROFILE` para guardar credenciais reais.**
+
+Para confirmar a persistência, salve o provedor e verifique a mensagem **“persistent credential storage verified”**. Feche completamente o TSCDesk, abra-o novamente e volte a **Settings → Providers**: a chave deve continuar mascarada e o provedor configurado, sem precisar colá-la de novo. Se o cofre local por senha mestra estiver bloqueado, desbloqueie-o na tela **Security**.
 
 ### Problemas comuns
 
@@ -229,7 +220,7 @@ O Secret Service continua preferencial. O fallback por senha mestra só é usado
 | Pacote WebKit ausente | Use uma distribuição com `libwebkit2gtk-4.1-dev`; apenas WebKitGTK 4.0 não basta. O recurso `linux-body` exige WebKitGTK 2.40+. |
 | Build encerrado com `Killed` | Pode ser falta de memória. Feche apps e repita com `--jobs 1`. |
 | Tela em branco/erro gráfico | Confira os logs no Terminal e atualize os pacotes. Como teste, execute `GDK_BACKEND=x11 "$HOME/.local/bin/tscdesk"` quando houver XWayland; não desative o sandbox. |
-| Credenciais não são salvas | Desbloqueie o Secret Service ou configure/desbloqueie o cofre em **Settings → Security**. |
+| Credenciais não são salvas | Reinstale/atualize pelo instalador e reabra o TSCDesk para ativar o Secret Service; se a interface indicar “apenas nesta sessão”, configure/desbloqueie o cofre em **Settings → Security**. |
 | Pasta do ChromeOS não aparece | Compartilhe-a com Linux no app Arquivos e informe seu caminho sob `/mnt/chromeos`. |
 | Controle de mouse/screenshot não funciona | O backend pode não estar disponível no Crostini. Não presuma acesso ao desktop hospedeiro nem tente elevar permissões automaticamente. |
 
@@ -272,7 +263,7 @@ Para modelos locais, conecte um servidor como Ollama, LM Studio ou llama.cpp por
 
 ## Compilação manual e desenvolvimento
 
-No Linux, as dependências principais são `build-essential`, `pkg-config`, `libgtk-3-dev`, `libwebkit2gtk-4.1-dev`, `perl` e Rust stable atual. Para execução, é necessária uma sessão gráfica, D-Bus e um Secret Service para credenciais.
+No Linux, as dependências principais são `build-essential`, `pkg-config`, `libgtk-3-dev`, `libwebkit2gtk-4.1-dev`, `perl` e Rust stable atual. Para execução, é necessária uma sessão gráfica e D-Bus. O instalador configura o Secret Service para credenciais; quando ele não está disponível, o cofre criptografado por senha mestra pode ser usado.
 
 ```bash
 cargo build --locked --release --workspace

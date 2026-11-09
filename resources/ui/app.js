@@ -4048,7 +4048,10 @@
         await loadProviders();
         await changed?.();
         d.close();
-        toast("RunPod salvo. Testar conexão verifica apenas /health, não inferência.");
+        toast(result.credentialPersistence?.status === "saved"
+          ? "RunPod salvo e armazenamento persistente verificado. Testar conexão verifica apenas /health."
+          : "RunPod disponível apenas nesta sessão; o armazenamento persistente não foi verificado.",
+        result.credentialPersistence?.status !== "saved");
       } catch (error) { status.textContent = safeMessage(error.message); }
       finally { busy = false; test.disabled = save.disabled = false; }
     }, "primary");
@@ -4101,7 +4104,9 @@
         "API key",
         key,
         p.apiKeyMasked
-          ? "Stored credential: " + p.apiKeyMasked
+          ? (state.providers?.credentialPersistence?.status === "session-only"
+            ? "Credential available only in this session; persistent storage was not verified."
+            : "Stored credential: " + p.apiKeyMasked)
           : "Never paste a key into a conversation.",
       ),
       field("Endpoint", base),
@@ -4142,7 +4147,16 @@
           try {
             error.textContent = "Saving provider and loading models…";
             const r = await api("/api/quixi/providers/save", payload());
-            if (r.error) throw new Error(r.error);
+            if (r.error) {
+              error.textContent = r.error;
+              if (r.credentialPersistence?.status === "session-only") {
+                error.append(el("div", { class: "form-actions" },
+                  button(r.credentialVault?.configured ? "Unlock encrypted credential vault" : "Configure encrypted master-password vault", () => {
+                    masterVaultDialog(r.credentialVault?.configured ? "unlock" : "configure");
+                  }, "quiet")));
+              }
+              return;
+            }
             const r2 = await api("/api/quixi/providers/complete-onboarding", {
               activeProvider: p.id,
               activeModel: r.activeModel || "",
@@ -4151,9 +4165,12 @@
             await loadProviders();
             await changed?.();
             d.close();
+            const persistenceMessage = r.credentialPersistence?.status === "saved"
+              ? "Provider saved and persistent credential storage verified."
+              : "Provider settings saved; persistent credential storage was not verified.";
             toast(r.modelDiscovery?.ok === false
-              ? "Provider saved. Could not load its models: " + r.modelDiscovery.message
-              : "Provider saved. Models are available in the chat dropdown.", r.modelDiscovery?.ok === false);
+              ? persistenceMessage + " Could not load models: " + r.modelDiscovery.message
+              : persistenceMessage + " Models are available in the chat dropdown.", r.modelDiscovery?.ok === false);
           } catch (e) {
             error.textContent = e.message;
           }

@@ -25,6 +25,7 @@ async function fixture({
   mcpAuthUrl = "https://example.invalid/oauth/authorize?state=fixture",
   mcpAuthDelayed = false,
   providerId = "custom",
+  providerSaveError = null,
   permissions = [],
   schedules = [],
   catalogModels = [],
@@ -80,6 +81,8 @@ async function fixture({
     subagentProvider: "",
     subagentModel: "",
     subagentModelUserSelected: false,
+    credentialPersistence: { status: "saved", verified: true },
+    credentialVault: { configured: false, unlocked: false, setupRequired: false },
     providers: [
       {
         id: providerId,
@@ -309,7 +312,19 @@ async function fixture({
       };
     if (route === "/api/quixi/workspace/inspect")
       return { exists: true, path: folderPaths[body.path] || body.path };
+    if (route === "/api/quixi/credential-vault/configure") {
+      providers.credentialVault = { configured: true, unlocked: true, setupRequired: false };
+      providers.credentialPersistence = { status: "saved", verified: true };
+      return { ok: true, vault: providers.credentialVault };
+    }
     if (route === "/api/quixi/providers/save") {
+      if (providerSaveError) {
+        return {
+          ...structuredClone(providers),
+          error: providerSaveError,
+          credentialPersistence: { status: "session-only", verified: false },
+        };
+      }
       const p = providers.providers.find((p) => p.id === body.providerId);
       if (body.customModel) {
         const id = body.customModel.trim();
@@ -846,6 +861,44 @@ for (const providerId of ["custom", "openrouter"])
       assert.equal(selected.body.setAsActive, true);
     } finally { f.close(); }
   });
+
+test("provider save distinguishes verified persistence and offers the encrypted fallback", async () => {
+  const success = await fixture({ providerId: "openrouter", catalogModels: ["fixture-model"] });
+  try {
+    await success.click("Settings");
+    await success.click("Providers");
+    await success.click("Manage providers");
+    await success.click("Configure");
+    await success.click("Save & use provider");
+    assert.match(success.w.document.querySelector("#toasts").textContent,
+      /persistent credential storage verified/);
+  } finally { success.close(); }
+
+  const failure = await fixture({
+    providerId: "openrouter",
+    providerSaveError: "Provider is available for this session, but credentials were not saved: fixture vault unavailable",
+  });
+  try {
+    await failure.click("Settings");
+    await failure.click("Providers");
+    await failure.click("Manage providers");
+    await failure.click("Configure");
+    await failure.click("Save & use provider");
+    assert.match(failure.w.document.querySelector("dialog .form-error").textContent,
+      /available for this session/);
+    await failure.click("Configure encrypted master-password vault");
+    const passwords = failure.w.document.querySelectorAll('dialog[data-master-vault] input[type="password"]');
+    assert.equal(passwords.length, 2);
+    passwords[0].value = "synthetic master password";
+    passwords[1].value = "synthetic master password";
+    await failure.click("Save master password");
+    const configured = failure.calls.find((call) => call.route === "/api/quixi/credential-vault/configure");
+    assert.ok(configured);
+    assert.equal(failure.w.document.querySelector('dialog[data-master-vault]'), null);
+    assert.match(failure.w.document.querySelector("#toasts").textContent,
+      /Master password configured/);
+  } finally { failure.close(); }
+});
 
 for (const providerId of ["custom", "openrouter"])
   test(`manual models can be saved without switching and then selected: ${providerId}`, async () => {

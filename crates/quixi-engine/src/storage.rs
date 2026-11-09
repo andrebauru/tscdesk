@@ -37,6 +37,44 @@ pub(crate) fn atomic_write(path: &Path, bytes: &[u8]) -> std::io::Result<()> {
     result
 }
 
+/// Writes and verifies a candidate without replacing the last valid document.
+/// The verifier reads the temporary file but uses the destination's stable
+/// identity for any external encryption keys.
+pub(crate) fn atomic_write_verified<F>(path: &Path, bytes: &[u8], verify: F) -> Result<(), String>
+where
+    F: FnOnce(&Path) -> Result<(), String>,
+{
+    let parent = path
+        .parent()
+        .ok_or_else(|| "Invalid storage path".to_string())?;
+    fs::create_dir_all(parent).map_err(|e| e.to_string())?;
+    let temporary = parent.join(format!(".{}.tmp", Uuid::new_v4()));
+    let result = (|| {
+        let mut options = fs::OpenOptions::new();
+        options.write(true).create_new(true);
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::OpenOptionsExt;
+            options.mode(0o600);
+        }
+        let mut file = options.open(&temporary).map_err(|e| e.to_string())?;
+        file.write_all(bytes).map_err(|e| e.to_string())?;
+        file.sync_all().map_err(|e| e.to_string())?;
+        drop(file);
+        verify(&temporary)?;
+        fs::rename(&temporary, path).map_err(|e| e.to_string())?;
+        #[cfg(unix)]
+        fs::File::open(parent)
+            .and_then(|directory| directory.sync_all())
+            .map_err(|e| e.to_string())?;
+        Ok(())
+    })();
+    if result.is_err() {
+        let _ = fs::remove_file(&temporary);
+    }
+    result
+}
+
 impl QuixiEngine {
     fn persist_session_document(&self, kind: &str, id: &str, title: &str, mut document: Value) {
         if id.trim().is_empty() {

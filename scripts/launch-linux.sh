@@ -37,14 +37,27 @@ if [[ -z "${DBUS_SESSION_BUS_ADDRESS:-}" && -n "${XDG_RUNTIME_DIR:-}" && -S "$XD
     export DBUS_SESSION_BUS_ADDRESS="unix:path=$BUS_PATH"
 fi
 
-# Only query an existing session. Never create or unlock a keyring, or store a password.
-if [[ -n "${DBUS_SESSION_BUS_ADDRESS:-}" ]] && command -v dbus-send >/dev/null 2>&1; then
-    if ! dbus-send --session --print-reply --reply-timeout=1500 --dest=org.freedesktop.DBus /org/freedesktop/DBus \
-        org.freedesktop.DBus.NameHasOwner string:org.freedesktop.secrets 2>/dev/null | grep -q 'boolean true'; then
-        printf '%s\n' 'tscdesk: warning: Secret Service is unavailable; unlock your login keyring with Seahorse.' >&2
+secret_service_available() {
+    [[ -n "${DBUS_SESSION_BUS_ADDRESS:-}" ]] || return 1
+    command -v dbus-send >/dev/null 2>&1 || return 1
+    dbus-send --session --print-reply --reply-timeout=1500 --dest=org.freedesktop.DBus /org/freedesktop/DBus \
+        org.freedesktop.DBus.NameHasOwner string:org.freedesktop.secrets 2>/dev/null | grep -q 'boolean true'
+}
+
+# Minimal Crostini sessions often have no autostart for the Secret Service.
+# Start only its secrets component on the same bus; never pass or read a password.
+start_secret_service() {
+    [[ -n "${DBUS_SESSION_BUS_ADDRESS:-}" ]] || return 0
+    command -v gnome-keyring-daemon >/dev/null 2>&1 || return 0
+    if ! secret_service_available; then
+        gnome-keyring-daemon --start --components=secrets >/dev/null 2>&1 || true
     fi
-else
-    printf '%s\n' 'tscdesk: warning: Secret Service could not be checked; unlock your login keyring with Seahorse if needed.' >&2
+}
+if [[ "${1:-}" != --check ]]; then
+    start_secret_service
+fi
+if [[ -n "${DBUS_SESSION_BUS_ADDRESS:-}" ]] && ! secret_service_available; then
+    printf '%s\n' 'tscdesk: warning: Secret Service is unavailable. TSCDesk will offer its encrypted master-password vault in Settings → Security.' >&2
 fi
 if [[ -z "${DBUS_SESSION_BUS_ADDRESS:-}" ]]; then
     command -v dbus-run-session >/dev/null 2>&1 || fail 'Missing dbus-run-session (install dbus-user-session).'
@@ -59,7 +72,13 @@ if [[ "${1:-}" == --check ]]; then
     exit 0
 fi
 if [[ -z "${DBUS_SESSION_BUS_ADDRESS:-}" ]]; then
+    # Start the Secret Service inside the same private bus as the application.
     # Execute the app directly, not this launcher: at most one D-Bus session.
-    exec dbus-run-session -- "$ROOT/bin/QuixiDesk" "$@"
+    exec dbus-run-session -- bash -c '
+        if command -v gnome-keyring-daemon >/dev/null 2>&1; then
+            gnome-keyring-daemon --start --components=secrets >/dev/null 2>&1 || true
+        fi
+        exec "$@"
+    ' bash "$ROOT/bin/QuixiDesk" "$@"
 fi
 exec "$ROOT/bin/QuixiDesk" "$@"

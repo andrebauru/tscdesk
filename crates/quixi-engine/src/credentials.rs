@@ -39,8 +39,13 @@ fn derive_wrapping_key(password: &str, salt: &[u8]) -> Result<Zeroizing<Vec<u8>>
         return Err("Master password must contain at least 12 characters.".into());
     }
     let mut key = Zeroizing::new(vec![0; 32]);
-    let params = Params::new(ARGON_MEMORY_KIB, ARGON_ITERATIONS, ARGON_PARALLELISM, Some(32))
-        .map_err(|_| "Invalid master-password parameters".to_string())?;
+    let params = Params::new(
+        ARGON_MEMORY_KIB,
+        ARGON_ITERATIONS,
+        ARGON_PARALLELISM,
+        Some(32),
+    )
+    .map_err(|_| "Invalid master-password parameters".to_string())?;
     Argon2::new(Algorithm::Argon2id, Version::V0x13, params)
         .hash_password_into(password.as_bytes(), salt, &mut key)
         .map_err(|_| "Could not derive the master encryption key".to_string())?;
@@ -72,7 +77,8 @@ fn decrypt_master_key(path: &Path, password: &str) -> Result<Zeroizing<Vec<u8>>,
             .map_err(|_| "Master password is not configured.".to_string())?,
     )
     .map_err(|_| "The local credential vault metadata is invalid.".to_string())?;
-    if document["version"] != 1 || document["kdf"] != "argon2id"
+    if document["version"] != 1
+        || document["kdf"] != "argon2id"
         || document["memoryKiB"] != ARGON_MEMORY_KIB
         || document["iterations"] != ARGON_ITERATIONS
         || document["parallelism"] != ARGON_PARALLELISM
@@ -161,13 +167,126 @@ fn credential_store_error(detail: &str) -> String {
     #[cfg(target_os = "linux")]
     {
         return format!(
-            "Linux Secret Service could not persist the credential. It remains available only for this session. On Debian/ChromeOS Linux, open Passwords and Keys (seahorse), create or unlock the Login keyring, ensure `gnome-keyring-daemon --start --components=secrets` runs in the same D-Bus session, then restart TSCDesk and save again. No plaintext fallback was written. Detail: {detail}"
+            "The Linux Secret Service is unavailable, locked, or has no accessible TSCDesk credential collection. Persistent storage was not verified, so the provider is available only for this session. Reinstall/update with the project installer and reopen TSCDesk so its launcher can start gnome-keyring in the same D-Bus session. If the service is still unavailable, use Settings → Security to configure or unlock the encrypted master-password vault. No plaintext fallback was written. Detail: {detail}"
         );
     }
     #[cfg(not(target_os = "linux"))]
     {
         format!("Unlock your system credential store and try again: {detail}")
     }
+}
+
+#[derive(Debug)]
+enum NativeEntryError {
+    NoEntry,
+    Unavailable(String),
+}
+
+/// Small boundary around the OS vault, also used by deterministic failure tests.
+trait NativeEntry {
+    fn read_secret(&self) -> Result<String, NativeEntryError>;
+    fn write_secret(&self, value: &str) -> Result<(), NativeEntryError>;
+}
+
+impl NativeEntry for keyring::Entry {
+    fn read_secret(&self) -> Result<String, NativeEntryError> {
+        self.get_password().map_err(|error| match error {
+            keyring::Error::NoEntry => NativeEntryError::NoEntry,
+            other => NativeEntryError::Unavailable(other.to_string()),
+        })
+    }
+
+    fn write_secret(&self, value: &str) -> Result<(), NativeEntryError> {
+        self.set_password(value)
+            .map_err(|error| NativeEntryError::Unavailable(error.to_string()))
+    }
+}
+
+struct NativeKeyReadError {
+    message: String,
+    allow_create: bool,
+}
+
+fn read_native_key(entry: &dyn NativeEntry) -> Result<Option<Vec<u8>>, NativeKeyReadError> {
+    match entry.read_secret() {
+        Ok(encoded) => {
+            let invalid = || NativeKeyReadError {
+                message: "The operating-system vault contains an invalid TSCDesk credential key."
+                    .to_string(),
+                allow_create: false,
+            };
+            let key = STANDARD.decode(encoded).map_err(|_| invalid())?;
+            if key.len() != 32 {
+                return Err(invalid());
+            }
+            Ok(Some(key))
+        }
+        Err(NativeEntryError::NoEntry) => Ok(None),
+        Err(NativeEntryError::Unavailable(detail)) => Err(NativeKeyReadError {
+            message: credential_store_error(&detail),
+            allow_create: true,
+        }),
+    }
+}
+
+/// A save is successful only after the same backend returns the value just written.
+fn write_native_key(entry: &dyn NativeEntry, encoded: &str) -> Result<(), String> {
+    entry.write_secret(encoded).map_err(|error| match error {
+        NativeEntryError::NoEntry => credential_store_error("No entry"),
+        NativeEntryError::Unavailable(detail) => credential_store_error(&detail),
+    })?;
+    match entry.read_secret() {
+        Ok(saved) if saved == encoded => Ok(()),
+        Ok(_) => Err(credential_store_error(
+            "Credential read-back did not match the value just written",
+        )),
+        Err(NativeEntryError::NoEntry) => Err(credential_store_error(
+            "Credential was not present during read-back verification",
+        )),
+        Err(NativeEntryError::Unavailable(detail)) => Err(credential_store_error(&detail)),
+    }
+}
+
+fn native_key_with_entries(
+    primary: &dyn NativeEntry,
+    legacy: Option<&dyn NativeEntry>,
+    create: bool,
+) -> Result<Vec<u8>, String> {
+    let mut read_errors = Vec::new();
+    let mut allow_create = true;
+    match read_native_key(primary) {
+        Ok(Some(key)) => return Ok(key),
+        Ok(None) => {}
+        Err(error) => {
+            allow_create &= error.allow_create;
+            read_errors.push(error.message);
+        }
+    }
+    if let Some(legacy) = legacy {
+        match read_native_key(legacy) {
+            Ok(Some(key)) => {
+                if create {
+                    // Non-destructive migration: keep the legacy item as a recovery path.
+                    let _ = write_native_key(primary, &STANDARD.encode(&key));
+                }
+                return Ok(key);
+            }
+            Ok(None) => {}
+            Err(error) => {
+                allow_create &= error.allow_create;
+                read_errors.push(error.message);
+            }
+        }
+    }
+    if !create || !allow_create {
+        return Err(read_errors.into_iter().next().unwrap_or_else(|| {
+            credential_store_error("No TSCDesk credential key exists in the operating-system vault")
+        }));
+    }
+    let mut key = vec![0; 32];
+    OsRng.fill_bytes(&mut key);
+    write_native_key(primary, &STANDARD.encode(&key))?;
+    Ok(key)
 }
 
 fn native_key(path: &Path, create: bool) -> Result<Vec<u8>, String> {
@@ -186,19 +305,24 @@ fn native_key(path: &Path, create: bool) -> Result<Vec<u8>, String> {
         return Ok(k);
     }
     let identity = format!("{:x}", Sha256::digest(path.to_string_lossy().as_bytes()));
-    let entry = keyring::Entry::new("QuixiDesk credentials", &identity)
-        .map_err(|e| credential_store_error(&e.to_string()))?;
-    match entry.get_password() {
-        Ok(s) => STANDARD.decode(s).map_err(|e| e.to_string()),
-        Err(keyring::Error::NoEntry) if create => {
-            let mut k = vec![0; 32];
-            OsRng.fill_bytes(&mut k);
-            entry
-                .set_password(&STANDARD.encode(&k))
+    #[cfg(target_os = "linux")]
+    {
+        // Crostini and other minimal Linux sessions can have a Secret Service
+        // without a `default` collection. keyring maps that to NoStorageAccess
+        // ("Secret Service: no result found"), not NoEntry. An explicit target
+        // lets keyring create our own collection instead of requiring `default`.
+        let primary =
+            keyring::Entry::new_with_target("TSCDesk", "QuixiDesk credentials", &identity)
                 .map_err(|e| credential_store_error(&e.to_string()))?;
-            Ok(k)
-        }
-        Err(e) => Err(credential_store_error(&e.to_string())),
+        let legacy = keyring::Entry::new("QuixiDesk credentials", &identity)
+            .map_err(|e| credential_store_error(&e.to_string()))?;
+        return native_key_with_entries(&primary, Some(&legacy), create);
+    }
+    #[cfg(not(target_os = "linux"))]
+    {
+        let entry = keyring::Entry::new("QuixiDesk credentials", &identity)
+            .map_err(|e| credential_store_error(&e.to_string()))?;
+        native_key_with_entries(&entry, None, create)
     }
 }
 
@@ -347,7 +471,8 @@ mod tests {
 
     #[test]
     fn hybrid_provider_uses_native_then_master_without_exposing_secret() {
-        let dir = std::env::temp_dir().join(format!("quixi-master-provider-{}", uuid::Uuid::new_v4()));
+        let dir =
+            std::env::temp_dir().join(format!("quixi-master-provider-{}", uuid::Uuid::new_v4()));
         fs::create_dir_all(&dir).unwrap();
         let path = dir.join("providers.json");
         configure_master(&path, "a secure master password", None).unwrap();
@@ -355,28 +480,157 @@ mod tests {
         let cipher = Aes256Gcm::new_from_slice(&key).unwrap();
         let nonce = [7_u8; 12];
         let secrets = json!({"custom":{"apiKeyRaw":"private-provider-key"}});
-        let ciphertext = cipher.encrypt(Nonce::from_slice(&nonce), serde_json::to_vec(&secrets).unwrap().as_ref()).unwrap();
+        let ciphertext = cipher
+            .encrypt(
+                Nonce::from_slice(&nonce),
+                serde_json::to_vec(&secrets).unwrap().as_ref(),
+            )
+            .unwrap();
         let document = json!({
             "providers":[{"id":"custom"}],
             "encryptedCredentials":{"version":1,"backend":"hybrid","nonce":STANDARD.encode(nonce),"ciphertext":STANDARD.encode(ciphertext)}
         });
         assert!(!document.to_string().contains("private-provider-key"));
         lock_master(&path);
-        assert_eq!(open(&path, document.clone()).unwrap()["providers"][0]["apiKeyRaw"], "private-provider-key");
+        assert_eq!(
+            open(&path, document.clone()).unwrap()["providers"][0]["apiKeyRaw"],
+            "private-provider-key"
+        );
         fs::remove_file(path.with_file_name("test-credentials.key")).unwrap();
         assert!(open(&path, document.clone()).is_err());
         unlock_master(&path, "a secure master password").unwrap();
-        assert_eq!(open(&path, document).unwrap()["providers"][0]["apiKeyRaw"], "private-provider-key");
+        assert_eq!(
+            open(&path, document).unwrap()["providers"][0]["apiKeyRaw"],
+            "private-provider-key"
+        );
         lock_master(&path);
         fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[derive(Default)]
+    struct FakeNativeEntry {
+        value: std::cell::RefCell<Option<String>>,
+        unavailable: Option<String>,
+        fail_write: bool,
+        writes: std::cell::RefCell<usize>,
+    }
+
+    impl FakeNativeEntry {
+        fn unavailable(detail: &str) -> Self {
+            Self {
+                unavailable: Some(detail.to_string()),
+                ..Default::default()
+            }
+        }
+
+        fn with_key(key: &[u8]) -> Self {
+            Self {
+                value: std::cell::RefCell::new(Some(STANDARD.encode(key))),
+                ..Default::default()
+            }
+        }
+    }
+
+    impl NativeEntry for FakeNativeEntry {
+        fn read_secret(&self) -> Result<String, NativeEntryError> {
+            if let Some(value) = self.value.borrow().clone() {
+                return Ok(value);
+            }
+            if let Some(detail) = &self.unavailable {
+                return Err(NativeEntryError::Unavailable(detail.clone()));
+            }
+            Err(NativeEntryError::NoEntry)
+        }
+
+        fn write_secret(&self, value: &str) -> Result<(), NativeEntryError> {
+            *self.writes.borrow_mut() += 1;
+            if self.fail_write {
+                return Err(NativeEntryError::Unavailable(
+                    "fixture service unavailable".into(),
+                ));
+            }
+            *self.value.borrow_mut() = Some(value.to_string());
+            Ok(())
+        }
+    }
+
+    #[test]
+    fn missing_default_collection_creates_verified_managed_collection() {
+        let primary = FakeNativeEntry::default();
+        let legacy = FakeNativeEntry::unavailable("Secret Service: no result found");
+        let created = native_key_with_entries(&primary, Some(&legacy), true).unwrap();
+        assert_eq!(created.len(), 32);
+        assert_eq!(*primary.writes.borrow(), 1);
+        assert!(primary.value.borrow().is_some());
+        // A new process reads the same key without creating or replacing it.
+        let reopened = native_key_with_entries(&primary, Some(&legacy), false).unwrap();
+        assert_eq!(reopened, created);
+        assert_eq!(*primary.writes.borrow(), 1);
+    }
+
+    #[test]
+    fn legacy_key_is_preserved_and_migrated_without_deleting_it() {
+        let key = vec![7_u8; 32];
+        let primary = FakeNativeEntry::default();
+        let legacy = FakeNativeEntry::with_key(&key);
+        assert_eq!(
+            native_key_with_entries(&primary, Some(&legacy), true).unwrap(),
+            key
+        );
+        assert_eq!(
+            STANDARD
+                .decode(legacy.value.borrow().clone().unwrap())
+                .unwrap(),
+            key
+        );
+        assert_eq!(
+            STANDARD
+                .decode(primary.value.borrow().clone().unwrap())
+                .unwrap(),
+            key
+        );
+    }
+
+    #[test]
+    fn unavailable_service_and_failed_write_never_claim_persistence() {
+        let primary = FakeNativeEntry {
+            unavailable: Some("fixture D-Bus unavailable".into()),
+            fail_write: true,
+            ..Default::default()
+        };
+        let legacy = FakeNativeEntry::unavailable("Secret Service: no result found");
+        let error = native_key_with_entries(&primary, Some(&legacy), true).unwrap_err();
+        assert!(error.contains("Persistent storage was not verified"));
+        assert!(error.contains("No plaintext fallback was written"));
+        assert_eq!(*primary.writes.borrow(), 1);
+
+        let unwritable = FakeNativeEntry {
+            fail_write: true,
+            ..Default::default()
+        };
+        assert!(native_key_with_entries(&unwritable, None, true).is_err());
+        assert_eq!(*unwritable.writes.borrow(), 1);
+        assert!(native_key_with_entries(&FakeNativeEntry::default(), None, false).is_err());
+
+        let invalid = FakeNativeEntry {
+            value: std::cell::RefCell::new(Some("not a valid credential key".into())),
+            ..Default::default()
+        };
+        assert!(native_key_with_entries(&invalid, None, true).is_err());
+        assert_eq!(
+            *invalid.writes.borrow(),
+            0,
+            "an existing invalid item must not be replaced"
+        );
     }
 
     #[cfg(target_os = "linux")]
     #[test]
     fn linux_vault_error_is_actionable_without_offering_plaintext() {
         let message = credential_store_error("Secret Service: no result found");
-        assert!(message.contains("seahorse"));
-        assert!(message.contains("gnome-keyring-daemon"));
+        assert!(message.contains("project installer"));
+        assert!(message.contains("gnome-keyring"));
+        assert!(message.contains("master-password vault"));
         assert!(message.contains("only for this session"));
         assert!(message.contains("No plaintext fallback was written"));
     }
