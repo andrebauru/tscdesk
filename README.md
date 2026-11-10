@@ -1,13 +1,153 @@
 # TsCIDE
 
+[![License: MIT](https://img.shields.io/badge/license-MIT-14B8A6.svg)](LICENSE)
+[![Built with Rust](https://img.shields.io/badge/built%20with-Rust-0F172A?logo=rust)](Cargo.toml)
+[![Platforms: Linux, Windows, macOS](https://img.shields.io/badge/platforms-Linux%20%7C%20Windows%20%7C%20macOS-2563EB)](#english)
+[![ChromeOS: experimental](https://img.shields.io/badge/ChromeOS-Crostini%20experimental-D97706?logo=googlechrome)](docs/chromeos.md)
+
+[English](#english) · [Português](#português) · [Script reference / Referência dos scripts](#script-reference)
+
+## English
+
+**TsCIDE is a Rust desktop workspace for working with AI, local projects, files, a terminal, and Git.** It uses the system webview instead of Electron. Connect an AI provider, choose a model, and authorize the actions the assistant may perform. A provider account and its API charges are separate from the application.
+
+The repository is named `tscdesk`. For compatibility, the executable is `QuixiDesk`, internal Rust crates use `quixi-*`, and normal application data is stored in `~/.quixi`. The desktop shortcut and interface use the **TsCIDE** name.
+
+### Features and limits
+
+- **AI chat and providers:** configure OpenRouter, OpenAI, Anthropic, Gemini, DeepSeek, RunPod Serverless, local services, or a compatible custom endpoint. Availability, authentication, prices, and context limits depend on the provider.
+- **Projects and tools:** select folders, inspect and edit files, run commands, review Git changes, organize conversations and HTML artifacts, and connect external MCP tools and skills. Subagents and schedules are available; schedules require the app to remain open.
+- **Permissions:** Manual asks before edits and commands; Allow file edits permits edits but still asks for commands; Auto permits tool actions. These application approvals are not a guarantee of OS sandboxing. A conversation without a selected folder does not receive workspace file tools.
+- **System integration:** desktop capture, input, clipboard, and folder selection depend on the platform, compositor, and permissions. The in-app browser does not automatically share Chrome tabs or sessions. Direct attachments support images and text, not native PDF or Office ingestion.
+- **ChromeOS:** runs as a Linux application inside Crostini, not as a Chrome extension or native ChromeOS application. Support is experimental; GUI, credentials, permissions, and ARM64 need real-device validation. Share ChromeOS folders with Linux before accessing them under `/mnt/chromeos`.
+
+### Install and launch
+
+#### ChromeOS / Debian / Ubuntu
+
+Enable the Linux development environment on the Chromebook and open its Linux Terminal. For a fresh checkout:
+
+```bash
+sudo apt-get update
+sudo apt-get install git python3
+cd "$HOME"
+git clone https://github.com/andrebauru/tscdesk.git
+cd tscdesk
+bash iniciar-chromeos.sh
+```
+
+Do not run the whole installer as root. The script asks for consent before using `sudo` for APT and before installing or updating Rust. It builds the workspace with `Cargo.lock`, installs the app for the current user, and creates a desktop shortcut. Debian 12+ or Ubuntu 22.04+, x86_64 or aarch64, GTK 3 and WebKitGTK 4.1 packages are required; ARM support is not a claim of hardware testing. The first build may take a long time and require several gigabytes of disk space.
+
+For an existing checkout, preserve local changes and update with:
+
+```bash
+cd "$HOME/tscdesk"
+git pull --ff-only
+bash iniciar-chromeos.sh --reinstalar --abrir
+```
+
+Adjust the checkout path if needed. `--reinstalar` prepares a new managed release before switching, stops processes belonging to managed releases, and removes only older managed releases; it preserves `~/.quixi`, projects, and credentials. `--instalar` performs an update while retaining older releases. See the [script reference](#script-reference) for all options. After installation, launch **TsCIDE** from the application menu or run `"$HOME/.local/bin/tscdesk"`; use `--check` for a non-launching diagnostic. If the command is not on `PATH`, open a new Terminal or source the file reported by the installer, normally `~/.bashrc`.
+
+The launcher uses the existing graphical session and D-Bus when available, otherwise starts a private D-Bus session. It attempts to start the Secret Service component of GNOME Keyring; it does not disable WebKit's sandbox or change input-device permissions.
+
+#### Windows
+
+On Windows 11, open a terminal in the checkout and run:
+
+```powershell
+powershell -ExecutionPolicy Bypass -File .\instalar-windows.ps1 -Diagnostico
+powershell -ExecutionPolicy Bypass -File .\instalar-windows.ps1
+```
+
+The installer can request consent to install missing Rust stable, Microsoft C++ Build Tools/Windows SDK, and WebView2 Evergreen through official channels. Build Tools may request UAC elevation. It builds a release and installs per user under `%LOCALAPPDATA%\Programs\TSCDesk`; see the [Windows installer options](#script-reference). It does not disable Windows security protections. The existing installer may ask for a master-password change after reinstalling; existing data is preserved and changing an existing vault requires its current password.
+
+#### macOS
+
+With Apple's command-line tools and current Rust installed:
+
+```bash
+./scripts/package-macos-app.sh
+open dist/QuixiDesk.app
+```
+
+The documented setup targets macOS 14+. macOS may ask for screen recording, accessibility, or AppleScript permissions. The packaging script replaces its destination bundle and normally installs a helper in `~/.local/bin`; review its [options and side effects](#script-reference) first. The current bundle declares `TsCIDE` as its executable but copies `QuixiDesk`; launching the packaged bundle requires validation on macOS.
+
+### Connect a provider and protect credentials
+
+1. Open **Settings → Providers**, choose a provider, and enter its key in the protected field. Do not put API keys in chat, source files, shell history, or screenshots.
+2. Save the provider, refresh its model catalog if needed, and select a model in the chat. Choose a project folder when the task needs files; start with Manual permissions.
+3. OpenRouter's picker supports search, filters, manual selection, automatic routing, and an economic mode. Economic selection is a cost/capability heuristic, not a guarantee of equivalent quality. Reported and estimated usage can differ from the provider's final bill.
+4. A successful save must report that persistent credential storage was verified. Close and reopen the app, then check that the provider remains configured and the key is masked. An empty key field keeps the saved key.
+
+Provider credentials are encrypted with AES-256-GCM. The OS vault is preferred; on Linux the launcher tries to start Secret Service on the same session bus. If the native vault is unavailable or locked, the app offers **Settings → Security**, where a master password of at least 12 characters protects a local key using Argon2id and AES-256-GCM. Unlock this vault each time the app starts; if the password is lost, credentials protected only by it cannot be recovered. A “session only” warning means persistence was not verified. Do not use `QUIXI_TEST_PROFILE` to store real credentials.
+
+### RunPod and local AI controls
+
+For a queue-based RunPod endpoint, open **Settings → Providers → RunPod Serverless** and enter its Endpoint ID, API key, and installed model name (default `qwen2.5-coder:7b`). **Test connection** calls `/health` only; it does not submit an inference job or prove the model works. A chat request can incur charges. The current adapter returns a complete response and is **chat-only**, without tool calling or streaming. See [docs/runpod.md](docs/runpod.md); the mutable worker image and real endpoint require authorized validation.
+
+Send `FINAL` alone in chat to pause AI work, clear pending messages, disarm AI schedules, and attempt cancellation of known RunPod jobs. Send `INICIAR` alone to permit new requests; it does not replay old work, re-enable schedules, or warm a GPU. Cancellation cannot guarantee that a remote job or GPU has stopped, nor does it guarantee zero cost.
+
+### Development and validation
+
+```bash
+# Build and run; use a disposable profile for tests.
+cargo build --locked --release --workspace
+./target/release/QuixiDesk
+QUIXI_TEST_PROFILE="$(mktemp -d)" cargo test --locked --workspace
+
+# Installer tests use fixtures and do not install packages.
+python3 -m unittest discover -s tests/install -v
+
+# Node.js is needed for UI tests, not for running the app.
+npm ci --prefix tests/ui
+node --test tests/ui/*.test.cjs
+python3 scripts/audit-product-assets.py
+```
+
+Windows users can run `cargo build --locked --release --workspace` and then `target\release\QuixiDesk.exe`. Linux builds need GTK 3, WebKitGTK 4.1 and the other dependencies listed in [the Linux installation section](#instalação-no-chromebook-ou-linux-debianubuntu). `make`, `make run`, `make test`, `make check`, and `make install-linux` wrap common tasks. `make app`, `make install`, `make open`, and `make uninstall` are macOS-oriented; `make install` replaces `/Applications/QuixiDesk.app` and `make uninstall` removes it. `make clean` removes Cargo build output and `dist`.
+
+Useful environment variables: `QUIXI_RESOURCES_DIR` selects resources, `QUIXI_WORKSPACE` changes the default workspace, `QUIXI_TEST_PROFILE` selects an isolated test profile, and `QUIXI_AUTOMATION_PORT` changes the loopback automation port. Do not assume an override grants workspace access to a folderless conversation.
+
+<a id="script-reference"></a>
+### Script reference
+
+Run commands from the repository root. `--help` is available only where stated; read the script before running tools with side effects. The first two entries are the normal user-facing installers.
+
+| Script | Purpose and operation |
+| --- | --- |
+| [`iniciar-chromeos.sh`](iniciar-chromeos.sh) | ChromeOS/Crostini entry point: installs on first run and subsequently launches the managed installation. Run `bash iniciar-chromeos.sh --help`. `--instalar` updates; `--reinstalar` replaces managed releases; `--jobs N` sets build parallelism (default 1); `--yes` consents to dependency/Rust setup; `--skip-deps` or `--skip-build` reuse existing prerequisites or binaries; `--abrir`/`--nao-abrir` choose whether to open; `--check` diagnoses without installing or opening. Use `--` before application arguments. Requires a graphical session even for install/check. |
+| [`instalar-windows.ps1`](instalar-windows.ps1) | Per-user Windows installer. Run `powershell -ExecutionPolicy Bypass -File .\instalar-windows.ps1`. `-Diagnostico` checks prerequisites only; `-Yes` consents to dependency installation; `-PularDependencias` and `-PularCompilacao` reuse existing prerequisites/build; `-AbrirAoFinal` and `-NaoAbrirAoFinal` control launch; `-SemAtalhoDesktop` and `-SemAtalhoMenuIniciar` omit shortcuts; `-Destino <path>` selects the install directory. |
+| [`scripts/install-linux.sh`](scripts/install-linux.sh) | Direct per-user Debian/Ubuntu installer: `bash scripts/install-linux.sh --help`. `--reinstall` switches then removes older marked releases; `--skip-deps`, `--skip-build`, `--jobs N`, `--prefix <absolute-path>`, and `--yes` control dependencies, build, destination, and consent. It creates `~/.local/bin/tscdesk` and a desktop entry; it refuses unmanaged conflicts and preserves user data. |
+| [`scripts/launch-linux.sh`](scripts/launch-linux.sh) | Installed launcher, normally invoked through `"$HOME/.local/bin/tscdesk"`, not directly from the checkout. Use `--help` or `--check`; other arguments are passed to the application. Resolves installed resources, uses the graphical/D-Bus session and attempts Secret Service startup. |
+| [`scripts/package-macos-app.sh`](scripts/package-macos-app.sh) | macOS build and bundle: `./scripts/package-macos-app.sh` for release or `./scripts/package-macos-app.sh debug`. **Deletes and recreates the destination bundle** (`dist/QuixiDesk.app` by default; override with `QUIXI_APP_BUNDLE`). `QUIXI_APP_SYMLINK_RESOURCES=1` links resources for development; `QUIXI_INSTALL_HELPERS=0` avoids replacing `~/.local/bin/quixi-mcp-builtin`. It attempts ad-hoc signing. |
+| [`scripts/package-bundled-skills.py`](scripts/package-bundled-skills.py) | Rebuilds the `.skill` archives listed in `resources/bundled-skills/manifest.json` from `resources/bundled-skills-extracted/`: `python3 scripts/package-bundled-skills.py`. **Overwrites those archives**; review resulting changes. |
+| [`scripts/audit-product-assets.py`](scripts/audit-product-assets.py) | Read-only asset, branding, integrity, and redistribution-record audit: `python3 scripts/audit-product-assets.py`. Exits nonzero on findings. |
+| [`scripts/test-linux-ui.py`](scripts/test-linux-ui.py) | Linux WebKit/Xvfb smoke test with an isolated synthetic profile: first build `target/release/QuixiDesk`, then run `python3 scripts/test-linux-ui.py`. Requires Python, Xvfb, `xauth`, `dbus-run-session`, and an available loopback port. `--root <path>` changes the checkout, `--output <path>` selects evidence output, and `--port <port>` changes the automation port (default 19460). It does not validate a real Crostini desktop. |
+| [`scripts/test-local-ui-regressions.js`](scripts/test-local-ui-regressions.js) | Runs the original UI regression suite: `npm ci --prefix tests/ui`, then `node scripts/test-local-ui-regressions.js`. Runs in jsdom, not a real desktop window. |
+| [`scripts/test-windows-storage.ps1`](scripts/test-windows-storage.ps1) | Windows native storage/recovery integration test with a fresh synthetic profile: build release first, then `powershell -ExecutionPolicy Bypass -File .\scripts\test-windows-storage.ps1`. Optional `-Executable`, `-Resources`, `-OutputDirectory`, and `-AutomationPort` select inputs and evidence (default port 19458). It opens the app and uses the Windows clipboard; never point it at a real user profile. |
+| [`scripts/verify-actual-ipc-outputs.js`](scripts/verify-actual-ipc-outputs.js) | Legacy IPC comparison helper: `node scripts/verify-actual-ipc-outputs.js` only when the separately prepared `asar-extracted/.vite/build/index.chunk-jPKPzV-P.js` and `reference/` JSON fixtures are present. These inputs are not included in the checkout; it is not a normal installation or test step. |
+
+Files under `tests/` are automated test suites and fixtures, not installers. Run installer tests with `python3 -m unittest discover -s tests/install -v`; MCP fixture servers are managed by the suites. For prompt evaluation, `node --test tests/evals/*.test.cjs` runs offline tests and `node tests/evals/run.cjs` prints usage. Live evaluation requires explicit opt-in, can incur charges, and writes a report containing prompts and responses; see [the evaluation guide](docs/prompt-behavior-evals.md).
+
+The optional skill helper [`.agents/skills/visualize/scripts/render.py`](.agents/skills/visualize/scripts/render.py) renders an HTML fragment: `python3 .agents/skills/visualize/scripts/render.py fragment.html output.html` writes a file; use `--serve` instead of the output path to serve locally. `--help` lists its options; `--force` permits overwriting the output. Bundled skill scripts and vendored libraries are supporting resources, not general-purpose TsCIDE setup commands.
+
+### Documentation
+
+[ChromeOS validation](docs/chromeos.md) · [RunPod](docs/runpod.md) · [Architecture](ARCHITECTURE.md) · [MCP](docs/mcp.md) · [Subagents](docs/subagents.md) · [Task context](docs/scoped-task-context.md)
+
+### License
+
+MIT. See [LICENSE](LICENSE). Redistributed components retain their own notices in `resources/licenses/`, `resources/artifact-libs/licenses/`, and `vendor/`.
+
+---
+
+## Português
+
 **Workspace de desenvolvimento com IA, escrito em Rust, para organizar projetos e trabalhar com arquivos, terminal e Git.**
 
 O **TsCIDE** reúne conversas com diferentes modelos, projetos locais, ferramentas MCP e artefatos HTML em um aplicativo de desktop, sem Electron. Você conecta um provedor de IA — incluindo RunPod Serverless — e autoriza as ações que podem ser executadas no seu projeto. O suporte ao **ChromeOS funciona pelo ambiente Linux (Crostini)** e permanece experimental; também há código para Linux, Windows e macOS.
 
-[![Licença MIT](https://img.shields.io/badge/Licen%C3%A7a-MIT-14B8A6.svg)](LICENSE)
-[![Rust](https://img.shields.io/badge/Desenvolvido%20em-Rust-0F172A?logo=rust)](Cargo.toml)
-
-> Este repositório se chama **tscdesk** e deriva do QuixiDesk. Os nomes internos dos crates, o executável `QuixiDesk` e o diretório de dados `~/.quixi` foram preservados para manter compatibilidade. A identidade visual, o atalho e a interface usam **TsCIDE**.
+> Para manter compatibilidade, os crates internos usam `quixi-*`, o executável é `QuixiDesk` e o diretório de dados é `~/.quixi`. A identidade visual, o atalho e a interface usam **TsCIDE**.
 
 ## O que este projeto faz, em palavras simples?
 
@@ -58,7 +198,7 @@ cd tscdesk
 bash iniciar-chromeos.sh
 ```
 
-Se você já tem o projeto, não repita o clone: consulte [como atualizar](#como-atualizar-no-chromeos). O script **`iniciar-chromeos.sh` fica na raiz**, pede autorização para instalar dependências, compila o aplicativo e o abre. Não execute o script inteiro com `sudo`. A primeira compilação pode demorar e precisa de vários gigabytes livres; veja os [requisitos e opções de instalação](#instalação-no-chromebook-ou-linux-debianubuntu).
+Se você já tem o projeto, não repita o clone: consulte [como atualizar](#como-atualizar-no-chromeos). O script **`iniciar-chromeos.sh` fica na raiz**, pede autorização para instalar dependências e compila o aplicativo. Na primeira instalação, pergunta se deve abri-lo; `--abrir` abre sem perguntar. Não execute o script inteiro com `sudo`. A primeira compilação pode demorar e precisa de vários gigabytes livres; veja os [requisitos e opções de instalação](#instalação-no-chromebook-ou-linux-debianubuntu).
 
 Depois de instalar:
 
@@ -105,7 +245,7 @@ Mantenha o checkout no armazenamento Linux (`$HOME`), não em uma pasta comparti
 
 ### 2. Instalar e abrir pelo arquivo da raiz
 
-O arquivo **[`iniciar-chromeos.sh`](iniciar-chromeos.sh)** instala na primeira execução e abre a IDE. Nas seguintes, reutiliza a instalação sem recompilar. Execute no Terminal Linux, não como root:
+O arquivo **[`iniciar-chromeos.sh`](iniciar-chromeos.sh)** instala na primeira execução e pergunta se deve abrir a IDE. Nas seguintes, reutiliza a instalação sem recompilar e a abre. Execute no Terminal Linux, não como root:
 
 ```bash
 bash iniciar-chromeos.sh --help
@@ -239,6 +379,16 @@ Para confirmar a persistência, salve o provedor e verifique a mensagem **“per
 
 Há integrações para OpenRouter, OpenAI, Anthropic, Gemini, DeepSeek, RunPod Serverless e outros, além de endpoints personalizados compatíveis com OpenAI. Os modelos disponíveis, autenticação, preços e limites dependem de cada serviço; uma assinatura de chat não garante acesso à API.
 
+### Catálogo de modelos OpenRouter
+
+Após configurar o OpenRouter, abra **Choose model** no chat. O seletor permite buscar por nome ou ID, atualizar o catálogo e filtrar por fornecedor, preço, contexto, ferramentas e modelos gratuitos. Os valores e capacidades vêm do catálogo e podem mudar; confira o preço e a disponibilidade no provedor antes de usar.
+
+- **Manual** usa o modelo escolhido.
+- **Automático** usa um roteador disponível, como Auto Router ou Auto Code, que escolhe o modelo por requisição.
+- **Econômico** usa uma heurística de custo e capacidades; não garante qualidade equivalente entre modelos.
+
+O seletor também apresenta consumo da sessão, separando valores informados pela API de estimativas. Esses valores podem diferir da cobrança final do provedor.
+
 ### RunPod Serverless (Queue-based)
 
 Em **Settings → Providers → RunPod Serverless**, informe **Endpoint ID**, **API Key** e **Modelo** (padrão `qwen2.5-coder:7b`). Use **Salvar** para guardar a configuração no mecanismo criptografado existente; a chave salva não é devolvida à interface. Deixe o campo de chave vazio para preservar a chave existente.
@@ -294,7 +444,7 @@ cargo build --locked --release --workspace
 open dist/QuixiDesk.app
 ```
 
-O setup documentado usa macOS 14+. Captura de tela, acessibilidade e AppleScript podem exigir permissões do sistema.
+O setup documentado usa macOS 14+. Captura de tela, acessibilidade e AppleScript podem exigir permissões do sistema. O bundle atual declara `TsCIDE` como executável, mas o script copia `QuixiDesk`; a abertura do pacote precisa ser validada no macOS.
 
 ### Windows
 
@@ -377,6 +527,28 @@ python3 scripts/test-linux-ui.py
 
 Testes do instalador validam a instalação e o launcher, não o funcionamento de modelos ou da GUI. O smoke test Xvfb também não comprova integração com Sommelier nem controle da tela do ChromeOS.
 
+### Referência dos scripts
+
+Execute os comandos a partir da raiz do repositório. Os dois primeiros são as entradas normais de instalação; os demais incluem ferramentas de manutenção e testes. Consulte a ajuda quando indicada e leia os avisos antes de executar scripts que alteram arquivos.
+
+| Script | Função e operação |
+| --- | --- |
+| [`iniciar-chromeos.sh`](iniciar-chromeos.sh) | Instala na primeira execução e depois abre a instalação gerenciada no Linux do Chromebook. Ajuda: `bash iniciar-chromeos.sh --help`. `--instalar` atualiza; `--reinstalar` substitui releases gerenciadas; `--jobs N` define paralelismo (padrão 1); `--yes` autoriza dependências e Rust; `--skip-deps` e `--skip-build` reutilizam dependências ou binários; `--abrir` e `--nao-abrir` controlam a abertura; `--check` apenas diagnostica. Use `--` antes de argumentos destinados ao aplicativo. Exige sessão gráfica mesmo para instalar ou diagnosticar. |
+| [`instalar-windows.ps1`](instalar-windows.ps1) | Instalador do usuário no Windows: `powershell -ExecutionPolicy Bypass -File .\instalar-windows.ps1`. Use `-Diagnostico` para apenas verificar requisitos; `-Yes` para autorizar a instalação de dependências; `-PularDependencias` ou `-PularCompilacao` para reutilizar o que já existe; `-AbrirAoFinal` ou `-NaoAbrirAoFinal` para escolher a abertura; `-SemAtalhoDesktop` ou `-SemAtalhoMenuIniciar` para omitir atalhos; `-Destino <caminho>` para escolher onde instalar. |
+| [`scripts/install-linux.sh`](scripts/install-linux.sh) | Instalador direto para Debian/Ubuntu por usuário: `bash scripts/install-linux.sh --help`. `--reinstall` troca o release e remove releases antigos marcados; `--skip-deps`, `--skip-build`, `--jobs N`, `--prefix <caminho-absoluto>` e `--yes` controlam dependências, build, destino e consentimento. Cria `~/.local/bin/tscdesk` e um atalho; recusa conflitos não gerenciados e preserva dados pessoais. |
+| [`scripts/launch-linux.sh`](scripts/launch-linux.sh) | Launcher instalado, normalmente executado como `"$HOME/.local/bin/tscdesk"`, não diretamente do checkout. Aceita `--help` e `--check`; outros argumentos vão ao aplicativo. Localiza recursos, usa a sessão gráfica/D-Bus e tenta iniciar Secret Service. |
+| [`scripts/package-macos-app.sh`](scripts/package-macos-app.sh) | Compila e empacota no macOS: `./scripts/package-macos-app.sh` para release ou `./scripts/package-macos-app.sh debug`. **Apaga e recria o bundle de destino** (`dist/QuixiDesk.app` por padrão; altere com `QUIXI_APP_BUNDLE`). `QUIXI_APP_SYMLINK_RESOURCES=1` cria links para recursos de desenvolvimento; `QUIXI_INSTALL_HELPERS=0` evita substituir o helper em `~/.local/bin`. O script tenta assinatura ad hoc. |
+| [`scripts/package-bundled-skills.py`](scripts/package-bundled-skills.py) | Recria os arquivos `.skill` do manifesto `resources/bundled-skills/manifest.json` a partir de `resources/bundled-skills-extracted/`: `python3 scripts/package-bundled-skills.py`. **Sobrescreve os pacotes gerados**; revise as alterações. |
+| [`scripts/audit-product-assets.py`](scripts/audit-product-assets.py) | Auditoria somente de leitura de marca, arquivos, integridade e registros de redistribuição: `python3 scripts/audit-product-assets.py`. Retorna código diferente de zero quando encontra problemas. |
+| [`scripts/test-linux-ui.py`](scripts/test-linux-ui.py) | Smoke test Linux/WebKit em perfil sintético: compile primeiro `target/release/QuixiDesk` e execute `python3 scripts/test-linux-ui.py`. Exige Python, Xvfb, `xauth`, `dbus-run-session` e porta loopback livre. `--root <caminho>` altera o checkout, `--output <caminho>` escolhe onde salvar evidências e `--port <porta>` altera a porta de automação (padrão 19460). Não substitui teste em Chromebook. |
+| [`scripts/test-local-ui-regressions.js`](scripts/test-local-ui-regressions.js) | Executa a suíte original de regressão da interface: primeiro `npm ci --prefix tests/ui`, depois `node scripts/test-local-ui-regressions.js`. Usa jsdom, não uma janela real. |
+| [`scripts/test-windows-storage.ps1`](scripts/test-windows-storage.ps1) | Teste nativo de armazenamento e recuperação no Windows com perfil sintético: compile release e execute `powershell -ExecutionPolicy Bypass -File .\scripts\test-windows-storage.ps1`. Os parâmetros opcionais `-Executable`, `-Resources`, `-OutputDirectory` e `-AutomationPort` selecionam binário, recursos, evidências e porta (padrão 19458). Abre o aplicativo e usa o clipboard do Windows; não aponte para perfil real. |
+| [`scripts/verify-actual-ipc-outputs.js`](scripts/verify-actual-ipc-outputs.js) | Comparador legado de IPC: `node scripts/verify-actual-ipc-outputs.js`, somente quando `asar-extracted/.vite/build/index.chunk-jPKPzV-P.js` e os JSONs de `reference/` forem preparados separadamente. Esses insumos não vêm no checkout; não é uma etapa normal de instalação ou teste. Use apenas insumos confiáveis. |
+
+Os arquivos em `tests/` são suítes e fixtures, não instaladores. Para testes de instalação use `python3 -m unittest discover -s tests/install -v`; os servidores de teste MCP são controlados pelas próprias suítes. Para avaliação de prompts, `node --test tests/evals/*.test.cjs` executa testes offline e `node tests/evals/run.cjs` mostra o uso. Avaliações reais exigem autorização explícita, podem gerar custos e produzem relatórios com prompts e respostas; veja o [guia de avaliação](docs/prompt-behavior-evals.md).
+
+O auxiliar opcional [`.agents/skills/visualize/scripts/render.py`](.agents/skills/visualize/scripts/render.py) transforma um fragmento HTML em página: `python3 .agents/skills/visualize/scripts/render.py fragmento.html saida.html` grava um arquivo; use `--serve` no lugar do destino para servir localmente. `--help` lista as opções e `--force` permite sobrescrever o destino. Scripts de skills e bibliotecas vendorizadas são recursos de apoio, não comandos gerais de configuração do TsCIDE.
+
 ## Estrutura e documentação
 
 ```text
@@ -410,6 +582,6 @@ As imagens abaixo mostram o QuixiDesk original no macOS, com dados de demonstra�
 ![Conversa e ferramentas](docs/screenshots/quixidesk-conversation.jpg)
 ![Organização por projeto](docs/screenshots/quixidesk-projects.jpg)
 
-## Origem e licença
+## Licença
 
-Baseado no trabalho do QuixiDesk; mantidos os avisos e a [licença MIT](LICENSE). O desenvolvimento original também reconhece a contribuição do [REA — Reverse Engineer Anything](https://github.com/morluto/rea). Recursos e dependências redistribuídos mantêm seus próprios avisos e licenças em `resources/licenses/`, `resources/artifact-libs/licenses/` e `vendor/`.
+MIT. Consulte [LICENSE](LICENSE). Recursos e dependências redistribuídos mantêm seus próprios avisos e licenças em `resources/licenses/`, `resources/artifact-libs/licenses/` e `vendor/`.
