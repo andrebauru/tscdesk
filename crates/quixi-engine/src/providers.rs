@@ -1161,7 +1161,10 @@ impl ProviderManager {
             entry.api_format = "runpod".to_string();
             entry.auth_mode = "api_key".to_string();
             entry.api_key_masked = if entry.api_key_raw.is_empty() { String::new() } else { "••••••••".to_string() };
-            entry.configured &= provider_tool_runpod::validate_config(&entry.endpoint_id, &entry.api_key_raw, &entry.selected_model).is_ok();
+            let usa_modelo_padrao = entry.selected_model == provider_tool_runpod::DEFAULT_MODEL;
+            entry.configured &= provider_tool_runpod::validate_config(
+                &entry.endpoint_id, &entry.api_key_raw, &entry.selected_model, usa_modelo_padrao
+            ).is_ok();
             entry.oauth_access_token.clear();
             entry.oauth_refresh_token.clear();
             for model in &mut entry.models {
@@ -1320,7 +1323,7 @@ impl ProviderManager {
     }
 
     pub fn save_provider(&self, body: &Value) -> Value {
-        if *self.credential_load_failed.read() {return json!({"error":"Unlock the credential vault before changing providers. Existing credentials were preserved."});}
+        if *self.credential_load_failed.read() {return json!({"error":"Unlock the credential vault in Settings → Security before changing providers. Existing credentials were preserved.", "credentialVault": crate::credentials::master_status(&self.config_path), "credentialStorageFailure": true});}
         let provider_id = body
             .get("providerId")
             .or_else(|| body.get("id"))
@@ -1607,16 +1610,23 @@ impl ProviderManager {
             Some(value) => value.as_str().unwrap_or(""),
             None => &entry.selected_model,
         };
+        let usa_modelo_padrao = body.get("useEndpointDefault").and_then(Value::as_bool)
+            .unwrap_or(entry.selected_model == provider_tool_runpod::DEFAULT_MODEL);
         let key = match body.get("apiKey") {
             Some(value) if value.as_str() == Some("") && !entry.api_key_raw.is_empty() => &entry.api_key_raw,
             Some(value) if value.as_str() == Some(entry.api_key_masked.as_str()) && !entry.api_key_raw.is_empty() => &entry.api_key_raw,
             Some(value) => value.as_str().unwrap_or(""),
             None => &entry.api_key_raw,
         };
-        if let Err(error) = provider_tool_runpod::validate_config(endpoint, key, model) {
+        if let Err(error) = provider_tool_runpod::validate_config(endpoint, key, model, usa_modelo_padrao) {
             return json!({"error":error});
         }
-        let (endpoint, model, key) = (endpoint.to_string(), model.trim().to_string(), key.to_string());
+        let model = if usa_modelo_padrao {
+            provider_tool_runpod::DEFAULT_MODEL.to_string()
+        } else {
+            model.trim().to_string()
+        };
+        let (endpoint, key) = (endpoint.to_string(), key.to_string());
         entry.endpoint_id = endpoint;
         entry.selected_model = model;
         entry.api_key_raw = key;
@@ -1630,7 +1640,7 @@ impl ProviderManager {
         entry.oauth_access_token.clear();
         entry.oauth_refresh_token.clear();
         // These are user-selected worker models, not a GPU-backed discovery catalog.
-        if !entry.models.iter().any(|m| m.id == entry.selected_model) {
+        if !usa_modelo_padrao && !entry.models.iter().any(|m| m.id == entry.selected_model) {
             entry.models.push(Self::model(&entry.selected_model, &entry.selected_model, entry.context_window, false, false));
         }
         for model in &mut entry.models {
@@ -1647,7 +1657,7 @@ impl ProviderManager {
         }
         if self.persist_state(&candidate).is_err() {
             *self.credential_error.write() = Some("RunPod credentials could not be saved; previous configuration was preserved.".into());
-            return json!({"error":"RunPod credentials could not be saved; previous configuration was preserved."});
+            return json!({"error":"Não foi possível salvar as credenciais RunPod no armazenamento seguro ou no disco. A configuração anterior foi preservada. Desbloqueie o cofre do sistema ou configure o cofre com senha mestra em Settings → Security e tente novamente.", "credentialVault": crate::credentials::master_status(&self.config_path), "credentialStorageFailure": true});
         }
         *self.credential_error.write() = None;
         *state = candidate;
@@ -3296,7 +3306,8 @@ impl ProviderManager {
                 messages.push(json!({"role":"user","content":prompt}));
             }
             let reply = match provider_tool_runpod::complete_runpod_tool_turn(
-                &self.ai_control, &messages, &model_id, &credential, &endpoint_id, &mut on_chunk
+                &self.ai_control, &messages, &model_id, &credential, &endpoint_id,
+                model_id == provider_tool_runpod::DEFAULT_MODEL, &mut on_chunk
             ) {
                 Ok(turn) => turn.text,
                 Err(error) => error,
@@ -3880,7 +3891,8 @@ impl ProviderManager {
         // Text-only queue worker: never send tool schemas or normalized tool/media replay.
         if provider_id == "runpod-ollama" {
             return match provider_tool_runpod::complete_runpod_tool_turn(
-                &self.ai_control, original_messages, &model_id, &credential, &endpoint_id, &mut on_chunk
+                &self.ai_control, original_messages, &model_id, &credential, &endpoint_id,
+                model_id == provider_tool_runpod::DEFAULT_MODEL, &mut on_chunk
             ) {
                 Ok(turn) => Some(turn),
                 Err(error) => Some(tool_failure(error, &provider_name, &model_id)),

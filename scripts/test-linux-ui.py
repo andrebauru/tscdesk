@@ -118,7 +118,7 @@ proc = subprocess.Popen(
         "-a",
         "dbus-run-session",
         "--",
-        str(root / "target/release/QuixiDesk"),
+        str(root / "target/release/TsCIDE"),
     ],
     env=env,
     stdout=log,

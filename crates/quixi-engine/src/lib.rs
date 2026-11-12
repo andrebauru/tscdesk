@@ -22,6 +22,7 @@ mod storage;
 mod permissions;
 mod turns;
 mod chat_workflows;
+mod python_projects;
 #[cfg(test)]
 mod steering_tests;
 #[cfg(test)]
@@ -1826,6 +1827,40 @@ impl QuixiEngine {
             }) {
                 Ok(contents) => Self::json_resp(200, &json!({"contents":contents,"path":path.to_string_lossy()})),
                 Err(error) => Self::json_resp(400, &json!({"error":format!("Cannot read file: {error}")})),
+            };
+        }
+        if clean_path == "/api/quixi/python/settings" {
+            if method == "POST" {
+                return match python_projects::save_settings(&self.data_dir, &body_json) {
+                    Ok(value) => Self::json_resp(200, &value),
+                    Err(error) => Self::json_resp(400, &json!({"error":error})),
+                };
+            }
+            return Self::json_resp(200, &python_projects::load_settings(&self.data_dir));
+        }
+        if clean_path == "/api/quixi/python/status" && method == "POST" {
+            return match python_projects::status(&self.data_dir, &body_json) {
+                Ok(value) => Self::json_resp(200, &value), Err(error) => Self::json_resp(400, &json!({"error":error})),
+            };
+        }
+        if clean_path == "/api/quixi/python/install-tool" && method == "POST" {
+            return match python_projects::install_tool(&self.data_dir, &body_json) {
+                Ok(value) => Self::json_resp(200, &value), Err(error) => Self::json_resp(400, &json!({"error":error})),
+            };
+        }
+        if clean_path == "/api/quixi/python/generate-requirements" && method == "POST" {
+            return match python_projects::generate_requirements(&self.data_dir, &body_json) {
+                Ok(value) => Self::json_resp(200, &value), Err(error) => Self::json_resp(400, &json!({"error":error})),
+            };
+        }
+        if clean_path == "/api/quixi/python/install-requirements" && method == "POST" {
+            return match python_projects::install_requirements(&self.data_dir, &body_json) {
+                Ok(value) => Self::json_resp(200, &value), Err(error) => Self::json_resp(400, &json!({"error":error})),
+            };
+        }
+        if clean_path == "/api/quixi/python/terminal-environment" && method == "POST" {
+            return match python_projects::terminal_environment(&self.data_dir, &body_json) {
+                Ok(value) => Self::json_resp(200, &value), Err(error) => Self::json_resp(400, &json!({"error":error})),
             };
         }
 

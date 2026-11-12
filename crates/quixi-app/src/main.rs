@@ -2,6 +2,8 @@
 //! Zero Node.js, zero Electron processes. Serves the original interface over `app://localhost` and bridges
 //! desktop service and event channels to `QuixiEngine` & `EipcRouter`.
 
+#![cfg_attr(target_os = "windows", windows_subsystem = "windows")]
+
 use quixi_engine::QuixiEngine;
 use quixi_ipc::EipcRouter;
 use quixi_proto::EipcInvokePayload;
@@ -634,12 +636,12 @@ fn locate_resources_dir() -> PathBuf {
         if let Some(exe_dir) = exe.parent() {
             let portable = exe_dir.join("resources");
             if portable.join("ui/index.html").exists() { return portable; }
-            // macOS .app bundle: QuixiDesk.app/Contents/MacOS/QuixiDesk -> ../Resources
+            // macOS .app bundle: QuixiDesk.app/Contents/MacOS/TsCIDE -> ../Resources
             let bundle_res = exe_dir.join("../Resources");
             if bundle_res.join("ui/index.html").exists() {
                 return bundle_res.canonicalize().unwrap_or(bundle_res);
             }
-            // Cargo target/release/QuixiDesk -> ../../resources
+            // Cargo target/release/TsCIDE -> ../../resources
             let workspace_res = exe_dir.join("../../resources");
             if workspace_res.join("ui/index.html").exists() {
                 return workspace_res.canonicalize().unwrap_or(workspace_res);

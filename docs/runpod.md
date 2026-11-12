@@ -6,6 +6,8 @@ Esta integração é para um endpoint **Queue-based**, executando o worker Ollam
 
 O adaptador usa a API pública `/v2`, não uma URL fictícia `/v1/{ID}/runpod-ollama`. O servidor Ollama dentro do worker pode falar o protocolo OpenAI, mas isso **não torna a API Queue-based uma API OpenAI/SSE direta**.
 
+A documentação oficial também apresenta `POST /v2/{endpoint}/runsync` com `{"input":{"prompt":"..."}}`. Esse exemplo submete inferência e pode gerar cobrança; o conteúdo de `input` e o formato da resposta dependem do handler implantado. Não é seguro presumir que qualquer endpoint aceite o formato do worker Ollama ou trocar o contrato do aplicativo sem conhecer a imagem efetivamente implantada. O TSCDesk continua usando `/run` e `/status` para acompanhar e tentar cancelar o job; **Testar conexão** usa somente `/health`. Fonte: [Send API requests](https://docs.runpod.io/serverless/endpoints/send-requests).
+
 O contrato foi consultado no repositório público do worker. A tag `latest` é mutável e não comprova a versão efetivamente implantada no seu endpoint. **Nenhuma inferência paga foi feita nesta validação.** A resposta real do endpoint e a presença do modelo continuam pendentes de teste autorizado.
 
 ## Configuração na IDE
@@ -13,7 +15,7 @@ O contrato foi consultado no repositório público do worker. A tag `latest` é 
 1. Abra **Settings → Providers → RunPod Serverless**.
 2. Informe somente o **Endpoint ID** mostrado no painel RunPod, sem URL, barra, espaços ou parâmetros.
 3. Cole a **API Key** no campo de senha. Não coloque a chave em arquivos do projeto, `.env` versionado, código, screenshots ou mensagens de chat.
-4. Informe o nome exato do modelo Ollama, inicialmente **`qwen2.5-coder:7b`**.
+4. Para o endpoint escolher o modelo configurado nele, marque **Usar modelo padrão do endpoint**. Caso contrário, informe o nome exato do modelo Ollama.
 5. Clique em **Salvar**. O campo de chave não é preenchido com o segredo salvo; vazio preserva a chave existente.
 6. **Testar conexão** faz uma consulta a `/health`, somente por ação explícita. Isso verifica configuração/autenticação, não inicia um job e não valida inferência.
 7. Selecione o provedor/modelo no chat. Uma pergunta normal submete um job e **pode consumir créditos**; faça isso somente quando desejar usar o endpoint.
@@ -22,7 +24,7 @@ O armazenamento reutiliza a criptografia AES-256-GCM existente e o cofre do sist
 
 ### Configuração do worker
 
-A IDE envia explicitamente o nome do modelo no payload; não modifica variáveis, imagem, GPU ou escalonamento no painel RunPod.
+A IDE envia explicitamente o nome do modelo somente no modo manual. No modo padrão, omite `model` e deixa o handler do endpoint escolher o modelo; não modifica variáveis, imagem, GPU ou escalonamento no painel RunPod.
 
 Há uma divergência documental relevante: a descrição Docker Hub cita `MODEL_NAME`, enquanto o código público do worker utiliza `OLLAMA_MODEL_NAME` no caminho simplificado e no preload. Não alteramos sua variável existente `MODEL_NAME=qwen2.5-coder:7b`. Confira a versão/digest implantado e os logs do worker, sem expor segredos, para verificar se o modelo foi baixado. O nome fornecido no pedido não garante que os pesos existam.
 
@@ -51,6 +53,8 @@ O payload utiliza o caminho explícito do worker:
   }
 }
 ```
+
+Com **Usar modelo padrão do endpoint**, o mesmo payload é enviado sem a propriedade `model` dentro de `openai_input`. A resposta agregada também pode trazer `output.text`; nesse caso, o texto completo — inclusive raciocínio e resposta final produzidos pelo worker — é preservado.
 
 No worker público, `stream:false` gera um objeto de completions e `return_aggregate_stream:true` agrega o resultado. O adaptador normaliza a resposta para o chat da IDE. Não envia esquemas de ferramentas nem habilita execução de tool calls; o suporte do modelo/worker **não foi comprovado**. Anexos multimodais ou histórico de ferramentas não suportados precisam ser recusados, não executados ou silenciosamente interpretados como autorização.
 

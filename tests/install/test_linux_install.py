@@ -57,7 +57,7 @@ class LinuxInstallTests(unittest.TestCase):
         (self.source / "resources/quixi-logo.svg").write_text("<svg/>\n")
         (self.source / "resources/quixi-mark.svg").write_text("<svg/>\n")
         (self.source / "resources/ui/index.html").write_text("fixture UI\n")
-        app = self.source / "target/release/QuixiDesk"
+        app = self.source / "target/release/TsCIDE"
         app.write_text('''#!/usr/bin/env python3
 import json, os, sys
 from pathlib import Path
@@ -262,7 +262,7 @@ exec "$@"
         self.install(ok=False)
         self.assertEqual(os.readlink(self.prefix / "current"), current)
         self.assertEqual((self.launcher.read_bytes(), self.desktop.read_bytes()), prior)
-        (self.source / "target/release/QuixiDesk").unlink()
+        (self.source / "target/release/TsCIDE").unlink()
         self.install(ok=False)
         self.assertEqual(os.readlink(self.prefix / "current"), current)
         self.launch(DISPLAY=":0", DBUS_SESSION_BUS_ADDRESS="fixture:existing")
@@ -410,7 +410,7 @@ Path(os.environ['BUILD_LOG']).write_text(json.dumps(sys.argv[1:]))
         self.install()
         lines = dict(line.split("=", 1) for line in self.desktop.read_text().splitlines() if "=" in line)
         self.assertEqual(lines["Name"], "TsCIDE")
-        self.assertEqual(lines["StartupWMClass"], "QuixiDesk")
+        self.assertEqual(lines["StartupWMClass"], "TsCIDE")
         # freedesktop string unescape followed by Exec quote/backslash parsing.
         def unescape(value):
             escapes = {"s": " ", "n": "\n", "r": "\r", "t": "\t", "\\": "\\"}

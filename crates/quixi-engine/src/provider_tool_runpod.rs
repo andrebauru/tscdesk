@@ -19,6 +19,7 @@ use std::io::Read;
 use std::time::{Duration, Instant};
 
 pub(super) const API_BASE: &str = "https://api.runpod.ai/v2";
+pub(super) const DEFAULT_MODEL: &str = "runpod/endpoint-default";
 const CANCELLED: &str = "RunPod request cancelled locally; no response or tools were applied.";
 const MAX_RESPONSE_BYTES: u64 = 8 * 1024 * 1024;
 
@@ -27,9 +28,9 @@ fn valid_identifier(id: &str) -> bool {
         && id.bytes().all(|c| c.is_ascii_alphanumeric() || c == b'-' || c == b'_')
 }
 
-pub(super) fn validate_config(endpoint: &str, key: &str, model: &str) -> Result<(), String> {
+pub(super) fn validate_config(endpoint: &str, key: &str, model: &str, use_endpoint_default: bool) -> Result<(), String> {
     validate_auth(endpoint, key)?;
-    if model.trim().is_empty() || model.chars().any(char::is_control) {
+    if !use_endpoint_default && (model.trim().is_empty() || model.chars().any(char::is_control)) {
         return Err("Enter a nonempty worker model ID without control characters.".into());
     }
     Ok(())
@@ -100,7 +101,8 @@ fn response_json(response: Response) -> Result<Value, String> {
     serde_json::from_slice(&bytes).map_err(|_| "RunPod returned invalid JSON.".into())
 }
 
-fn payload(messages: &[Value], model: &str) -> Result<Value, String> {
+/// Monta o contrato OpenAI do worker, omitindo `model` quando o endpoint o define.
+fn payload(messages: &[Value], model: &str, use_endpoint_default: bool) -> Result<Value, String> {
     let mut wire = Vec::new();
     for message in messages {
         let role = message.get("role").and_then(Value::as_str).unwrap_or("");
@@ -117,13 +119,31 @@ fn payload(messages: &[Value], model: &str) -> Result<Value, String> {
         wire.push(json!({"role":role,"content":content}));
     }
     if wire.is_empty() { return Err("RunPod requires text messages.".into()); }
+    let mut openai_input = json!({"messages":wire,"stream":false});
+    if !use_endpoint_default {
+        openai_input["model"] = json!(model);
+    }
     Ok(json!({"input":{
         "openai_route":"/v1/chat/completions",
-        "openai_input":{"model":model,"messages":wire,"stream":false}
+        "openai_input":openai_input
     }}))
 }
 
 fn parse_output(output: &Value, model: &str) -> Result<ProviderToolTurn, String> {
+    // Alguns handlers Ollama retornam `text` diretamente. O conteúdo pode incluir
+    // raciocínio e resposta final; preserve-o integralmente, sem tentar recortá-lo.
+    let texto_direto = output.get("text").and_then(Value::as_str).or_else(|| {
+        output.as_array().filter(|items| items.len() == 1)
+            .and_then(|items| items[0].get("text").and_then(Value::as_str))
+    });
+    if let Some(texto) = texto_direto.filter(|text| !text.trim().is_empty()) {
+        return Ok(ProviderToolTurn {
+            response_items: Vec::new(), text: texto.into(), thinking: String::new(),
+            reasoning_details: None, tool_calls: Vec::new(), provider_name: "RunPod Serverless".into(),
+            model_id: model.into(), requested_model: model.into(), effective_model: None,
+            cost_usd: None, attempts: 1, stream_error: None, usage: None,
+        });
+    }
     let items = output.as_array().filter(|a| a.len() == 1)
         .ok_or_else(|| "RunPod worker returned an invalid aggregated completion.".to_string())?;
     let completion = match &items[0] {
@@ -218,12 +238,12 @@ fn wait(request: &AiRequest, deadline: Instant, delay: Duration) -> Result<(), S
 
 fn infer<F: FnMut(StreamChunk)>(
     control: &AgentControl, transport: &Transport, endpoint: &str, key: &str,
-    messages: &[Value], model: &str, on_chunk: &mut F,
+    messages: &[Value], model: &str, use_endpoint_default: bool, on_chunk: &mut F,
 ) -> Result<ProviderToolTurn, String> {
     // Register before /run. start_request returns a local rejection when paused.
     let request = control.start_request().map_err(|_| CANCELLED.to_string())?;
-    validate_config(endpoint, key, model)?;
-    let body = payload(messages, model)?;
+    validate_config(endpoint, key, model, use_endpoint_default)?;
+    let body = payload(messages, model, use_endpoint_default)?;
     let http = transport.client()?;
     let deadline = Instant::now() + transport.timeout;
     stopped(&request)?;
@@ -303,9 +323,9 @@ fn infer<F: FnMut(StreamChunk)>(
 
 pub(super) fn complete_runpod_tool_turn<F: FnMut(StreamChunk)>(
     control: &AgentControl, messages: &[Value], model: &str, key: &str,
-    endpoint: &str, on_chunk: &mut F,
+    endpoint: &str, use_endpoint_default: bool, on_chunk: &mut F,
 ) -> Result<ProviderToolTurn, String> {
-    infer(control, &Transport::production(), endpoint, key, messages, model, on_chunk)
+    infer(control, &Transport::production(), endpoint, key, messages, model, use_endpoint_default, on_chunk)
 }
 
 fn health(control: &AgentControl, transport: &Transport, endpoint: &str, key: &str) -> Result<(), String> {
@@ -393,6 +413,7 @@ mod tests {
                         Err(error) => panic!("Fixture request missing: {error}"),
                     }
                 };
+                stream.set_nonblocking(false).unwrap();
                 stream.set_read_timeout(Some(Duration::from_secs(5))).unwrap();
                 let mut reader = BufReader::new(stream.try_clone().unwrap());
                 let mut line = String::new();
@@ -430,7 +451,7 @@ mod tests {
         (Arc::new(AgentControl::new(root.path())), root)
     }
     fn run(control: &AgentControl, transport: &Transport, chunks: &mut Vec<StreamChunk>) -> Result<ProviderToolTurn, String> {
-        infer(control, transport, ENDPOINT, KEY, &messages(), MODEL, &mut |c| chunks.push(c))
+        infer(control, transport, ENDPOINT, KEY, &messages(), MODEL, false, &mut |c| chunks.push(c))
     }
 
     #[test]
@@ -454,6 +475,50 @@ mod tests {
         assert_eq!(requests[0].1, json!({"input":{"openai_route":"/v1/chat/completions",
             "openai_input":{"model":MODEL,"messages":messages(),"stream":false}}}));
         assert!(!requests[0].1.to_string().contains("tools"));
+    }
+
+    #[test]
+    fn endpoint_default_omits_model_and_accepts_direct_text_with_reasoning() {
+        let resposta = "<think>raciocínio preservado</think>\nResposta final";
+        let (address, requests, server) = fixture(vec![reply(
+            "POST /v2/fixture_123/run HTTP/1.1",
+            json!({"id":"job-1","status":"COMPLETED","output":{"text":resposta}}),
+        )]);
+        let (control, _profile) = control();
+        let mut chunks = Vec::new();
+        let turn = infer(
+            &control, &Transport::loopback(address, Duration::from_secs(2)), ENDPOINT, KEY,
+            &messages(), "", true, &mut |chunk| chunks.push(chunk),
+        ).unwrap();
+        server.join().unwrap();
+        assert_eq!(turn.text, resposta);
+        assert_eq!(chunks.len(), 1);
+        assert!(matches!(&chunks[0], StreamChunk::Text(texto) if texto == resposta));
+        let body = &requests.lock().unwrap()[0].1;
+        assert!(body["input"]["openai_input"].get("model").is_none());
+        assert_eq!(body["input"]["openai_input"]["messages"], json!(messages()));
+    }
+
+    #[test]
+    fn validation_requires_model_only_in_explicit_mode() {
+        assert!(validate_config(ENDPOINT, KEY, "", false).is_err());
+        assert!(validate_config(ENDPOINT, KEY, "", true).is_ok());
+        assert!(validate_config(ENDPOINT, KEY, MODEL, false).is_ok());
+    }
+
+    #[test]
+    fn saving_endpoint_default_accepts_empty_model_and_preserves_mode() {
+        let root = tempfile::tempdir().unwrap();
+        let manager = ProviderManager::new(&root.path().to_path_buf());
+        let result = manager.save_provider(&json!({
+            "providerId":"runpod-ollama", "endpointId":ENDPOINT, "apiKey":KEY,
+            "selectedModel":"", "useEndpointDefault":true,
+        }));
+        assert!(result.get("error").is_none(), "{result}");
+        let state = manager.state.read();
+        let entry = state.providers.iter().find(|p| p.id == "runpod-ollama").unwrap();
+        assert!(entry.configured);
+        assert_eq!(entry.selected_model, DEFAULT_MODEL);
     }
 
     #[test]
@@ -647,7 +712,7 @@ mod tests {
             json!({"role":"function","content":"result"}),
             json!({"role":"user","content":[{"type":"image_url","image_url":{"url":"data:image/png;base64,AA"}}]}),
             json!({"role":"assistant","content":"reply","_responses_output":[{"type":"function_call_output"}]})]
-        { assert!(payload(&[message], MODEL).is_err()); }
+        { assert!(payload(&[message], MODEL, false).is_err()); }
     }
 
     #[test]

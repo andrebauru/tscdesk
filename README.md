@@ -11,7 +11,7 @@
 
 **TsCIDE is a Rust desktop workspace for working with AI, local projects, files, a terminal, and Git.** It uses the system webview instead of Electron. Connect an AI provider, choose a model, and authorize the actions the assistant may perform. A provider account and its API charges are separate from the application.
 
-The repository is named `tscdesk`. For compatibility, the executable is `QuixiDesk`, internal Rust crates use `quixi-*`, and normal application data is stored in `~/.quixi`. The desktop shortcut and interface use the **TsCIDE** name.
+The repository is named `tscdesk`. Internal Rust crates retain the `quixi-*` compatibility names and normal application data remains in `~/.quixi`; the executable, desktop shortcut, and interface use the **TsCIDE** name.
 
 ### Features and limits
 
@@ -20,6 +20,7 @@ The repository is named `tscdesk`. For compatibility, the executable is `QuixiDe
 - **Permissions:** Manual asks before edits and commands; Allow file edits permits edits but still asks for commands; Auto permits tool actions. These application approvals are not a guarantee of OS sandboxing. A conversation without a selected folder does not receive workspace file tools.
 - **System integration:** desktop capture, input, clipboard, and folder selection depend on the platform, compositor, and permissions. The in-app browser does not automatically share Chrome tabs or sessions. Direct attachments support images and text, not native PDF or Office ingestion.
 - **ChromeOS:** runs as a Linux application inside Crostini, not as a Chrome extension or native ChromeOS application. Support is experimental; GUI, credentials, permissions, and ARM64 need real-device validation. Share ChromeOS folders with Linux before accessing them under `/mnt/chromeos`.
+- **Interface languages:** choose English, Português or Español in **Settings → General → Language**. The choice is applied immediately and saved locally; unsupported system languages fall back to English.
 
 ### Install and launch
 
@@ -59,7 +60,7 @@ powershell -ExecutionPolicy Bypass -File .\instalar-windows.ps1 -Diagnostico
 powershell -ExecutionPolicy Bypass -File .\instalar-windows.ps1
 ```
 
-The installer can request consent to install missing Rust stable, Microsoft C++ Build Tools/Windows SDK, and WebView2 Evergreen through official channels. Build Tools may request UAC elevation. It builds a release and installs per user under `%LOCALAPPDATA%\Programs\TSCDesk`; see the [Windows installer options](#script-reference). It does not disable Windows security protections. The existing installer may ask for a master-password change after reinstalling; existing data is preserved and changing an existing vault requires its current password.
+The installer can request consent to install missing Rust stable, Microsoft C++ Build Tools/Windows SDK, and WebView2 Evergreen through official channels. Build Tools may request UAC elevation. It builds a release and installs per user under `%LOCALAPPDATA%\Programs\TSCDesk`; see the [Windows installer options](#script-reference). It does not disable Windows security protections. Use `-Reinstalar` to replace only managed application files while preserving history, settings, API credentials, and the existing master-password vault under `%USERPROFILE%\.quixi`.
 
 #### macOS
 
@@ -76,7 +77,7 @@ The documented setup targets macOS 14+. macOS may ask for screen recording, acce
 
 1. Open **Settings → Providers**, choose a provider, and enter its key in the protected field. Do not put API keys in chat, source files, shell history, or screenshots.
 2. Save the provider, refresh its model catalog if needed, and select a model in the chat. Choose a project folder when the task needs files; start with Manual permissions.
-3. OpenRouter's picker supports search, filters, manual selection, automatic routing, and an economic mode. Economic selection is a cost/capability heuristic, not a guarantee of equivalent quality. Reported and estimated usage can differ from the provider's final bill.
+3. OpenRouter's picker supports search, filters, manual selection, automatic routing, and an economic mode. The entire catalog is displayed and can be searched by name or ID. Economic selection is a cost/capability heuristic, not a guarantee of equivalent quality. Reported and estimated usage can differ from the provider's final bill.
 4. A successful save must report that persistent credential storage was verified. Close and reopen the app, then check that the provider remains configured and the key is masked. An empty key field keeps the saved key.
 
 Provider credentials are encrypted with AES-256-GCM. The OS vault is preferred; on Linux the launcher tries to start Secret Service on the same session bus. If the native vault is unavailable or locked, the app offers **Settings → Security**, where a master password of at least 12 characters protects a local key using Argon2id and AES-256-GCM. Unlock this vault each time the app starts; if the password is lost, credentials protected only by it cannot be recovered. A “session only” warning means persistence was not verified. Do not use `QUIXI_TEST_PROFILE` to store real credentials.
@@ -92,7 +93,7 @@ Send `FINAL` alone in chat to pause AI work, clear pending messages, disarm AI s
 ```bash
 # Build and run; use a disposable profile for tests.
 cargo build --locked --release --workspace
-./target/release/QuixiDesk
+./target/release/TsCIDE
 QUIXI_TEST_PROFILE="$(mktemp -d)" cargo test --locked --workspace
 
 # Installer tests use fixtures and do not install packages.
@@ -104,7 +105,7 @@ node --test tests/ui/*.test.cjs
 python3 scripts/audit-product-assets.py
 ```
 
-Windows users can run `cargo build --locked --release --workspace` and then `target\release\QuixiDesk.exe`. Linux builds need GTK 3, WebKitGTK 4.1 and the other dependencies listed in [the Linux installation section](#instalação-no-chromebook-ou-linux-debianubuntu). `make`, `make run`, `make test`, `make check`, and `make install-linux` wrap common tasks. `make app`, `make install`, `make open`, and `make uninstall` are macOS-oriented; `make install` replaces `/Applications/QuixiDesk.app` and `make uninstall` removes it. `make clean` removes Cargo build output and `dist`.
+Windows users can run `cargo build --locked --release --workspace` and then `target\release\TsCIDE.exe`. Linux builds need GTK 3, WebKitGTK 4.1 and the other dependencies listed in [the Linux installation section](#instalação-no-chromebook-ou-linux-debianubuntu). `make`, `make run`, `make test`, `make check`, and `make install-linux` wrap common tasks. `make app`, `make install`, `make open`, and `make uninstall` are macOS-oriented; `make install` replaces `/Applications/QuixiDesk.app` and `make uninstall` removes it. `make clean` removes Cargo build output and `dist`.
 
 Useful environment variables: `QUIXI_RESOURCES_DIR` selects resources, `QUIXI_WORKSPACE` changes the default workspace, `QUIXI_TEST_PROFILE` selects an isolated test profile, and `QUIXI_AUTOMATION_PORT` changes the loopback automation port. Do not assume an override grants workspace access to a folderless conversation.
 
@@ -116,13 +117,13 @@ Run commands from the repository root. `--help` is available only where stated; 
 | Script | Purpose and operation |
 | --- | --- |
 | [`iniciar-chromeos.sh`](iniciar-chromeos.sh) | ChromeOS/Crostini entry point: installs on first run and subsequently launches the managed installation. Run `bash iniciar-chromeos.sh --help`. `--instalar` updates; `--reinstalar` replaces managed releases; `--jobs N` sets build parallelism (default 1); `--yes` consents to dependency/Rust setup; `--skip-deps` or `--skip-build` reuse existing prerequisites or binaries; `--abrir`/`--nao-abrir` choose whether to open; `--check` diagnoses without installing or opening. Use `--` before application arguments. Requires a graphical session even for install/check. |
-| [`instalar-windows.ps1`](instalar-windows.ps1) | Per-user Windows installer. Run `powershell -ExecutionPolicy Bypass -File .\instalar-windows.ps1`. `-Diagnostico` checks prerequisites only; `-Yes` consents to dependency installation; `-PularDependencias` and `-PularCompilacao` reuse existing prerequisites/build; `-AbrirAoFinal` and `-NaoAbrirAoFinal` control launch; `-SemAtalhoDesktop` and `-SemAtalhoMenuIniciar` omit shortcuts; `-Destino <path>` selects the install directory. |
+| [`instalar-windows.ps1`](instalar-windows.ps1) | Per-user Windows installer. Run `powershell -ExecutionPolicy Bypass -File .\instalar-windows.ps1`. `-Reinstalar` replaces only a managed installation and preserves `%USERPROFILE%\.quixi`; `-Diagnostico` checks prerequisites only; `-Yes` consents to dependency installation; `-PularDependencias` and `-PularCompilacao` reuse existing prerequisites/build; `-AbrirAoFinal` and `-NaoAbrirAoFinal` control launch; `-SemAtalhoDesktop` and `-SemAtalhoMenuIniciar` omit shortcuts; `-Destino <path>` selects the install directory. |
 | [`scripts/install-linux.sh`](scripts/install-linux.sh) | Direct per-user Debian/Ubuntu installer: `bash scripts/install-linux.sh --help`. `--reinstall` switches then removes older marked releases; `--skip-deps`, `--skip-build`, `--jobs N`, `--prefix <absolute-path>`, and `--yes` control dependencies, build, destination, and consent. It creates `~/.local/bin/tscdesk` and a desktop entry; it refuses unmanaged conflicts and preserves user data. |
 | [`scripts/launch-linux.sh`](scripts/launch-linux.sh) | Installed launcher, normally invoked through `"$HOME/.local/bin/tscdesk"`, not directly from the checkout. Use `--help` or `--check`; other arguments are passed to the application. Resolves installed resources, uses the graphical/D-Bus session and attempts Secret Service startup. |
 | [`scripts/package-macos-app.sh`](scripts/package-macos-app.sh) | macOS build and bundle: `./scripts/package-macos-app.sh` for release or `./scripts/package-macos-app.sh debug`. **Deletes and recreates the destination bundle** (`dist/QuixiDesk.app` by default; override with `QUIXI_APP_BUNDLE`). `QUIXI_APP_SYMLINK_RESOURCES=1` links resources for development; `QUIXI_INSTALL_HELPERS=0` avoids replacing `~/.local/bin/quixi-mcp-builtin`. It attempts ad-hoc signing. |
 | [`scripts/package-bundled-skills.py`](scripts/package-bundled-skills.py) | Rebuilds the `.skill` archives listed in `resources/bundled-skills/manifest.json` from `resources/bundled-skills-extracted/`: `python3 scripts/package-bundled-skills.py`. **Overwrites those archives**; review resulting changes. |
 | [`scripts/audit-product-assets.py`](scripts/audit-product-assets.py) | Read-only asset, branding, integrity, and redistribution-record audit: `python3 scripts/audit-product-assets.py`. Exits nonzero on findings. |
-| [`scripts/test-linux-ui.py`](scripts/test-linux-ui.py) | Linux WebKit/Xvfb smoke test with an isolated synthetic profile: first build `target/release/QuixiDesk`, then run `python3 scripts/test-linux-ui.py`. Requires Python, Xvfb, `xauth`, `dbus-run-session`, and an available loopback port. `--root <path>` changes the checkout, `--output <path>` selects evidence output, and `--port <port>` changes the automation port (default 19460). It does not validate a real Crostini desktop. |
+| [`scripts/test-linux-ui.py`](scripts/test-linux-ui.py) | Linux WebKit/Xvfb smoke test with an isolated synthetic profile: first build `target/release/TsCIDE`, then run `python3 scripts/test-linux-ui.py`. Requires Python, Xvfb, `xauth`, `dbus-run-session`, and an available loopback port. `--root <path>` changes the checkout, `--output <path>` selects evidence output, and `--port <port>` changes the automation port (default 19460). It does not validate a real Crostini desktop. |
 | [`scripts/test-local-ui-regressions.js`](scripts/test-local-ui-regressions.js) | Runs the original UI regression suite: `npm ci --prefix tests/ui`, then `node scripts/test-local-ui-regressions.js`. Runs in jsdom, not a real desktop window. |
 | [`scripts/test-windows-storage.ps1`](scripts/test-windows-storage.ps1) | Windows native storage/recovery integration test with a fresh synthetic profile: build release first, then `powershell -ExecutionPolicy Bypass -File .\scripts\test-windows-storage.ps1`. Optional `-Executable`, `-Resources`, `-OutputDirectory`, and `-AutomationPort` select inputs and evidence (default port 19458). It opens the app and uses the Windows clipboard; never point it at a real user profile. |
 | [`scripts/verify-actual-ipc-outputs.js`](scripts/verify-actual-ipc-outputs.js) | Legacy IPC comparison helper: `node scripts/verify-actual-ipc-outputs.js` only when the separately prepared `asar-extracted/.vite/build/index.chunk-jPKPzV-P.js` and `reference/` JSON fixtures are present. These inputs are not included in the checkout; it is not a normal installation or test step. |
@@ -147,7 +148,11 @@ MIT. See [LICENSE](LICENSE). Redistributed components retain their own notices i
 
 O **TsCIDE** reúne conversas com diferentes modelos, projetos locais, ferramentas MCP e artefatos HTML em um aplicativo de desktop, sem Electron. Você conecta um provedor de IA — incluindo RunPod Serverless — e autoriza as ações que podem ser executadas no seu projeto. O suporte ao **ChromeOS funciona pelo ambiente Linux (Crostini)** e permanece experimental; também há código para Linux, Windows e macOS.
 
-> Para manter compatibilidade, os crates internos usam `quixi-*`, o executável é `QuixiDesk` e o diretório de dados é `~/.quixi`. A identidade visual, o atalho e a interface usam **TsCIDE**.
+A interface oferece **English**, **Português** e **Español** em **Configurações → Geral → Idioma**. A alteração é imediata e fica salva para as próximas inicializações; idiomas do sistema não suportados usam inglês.
+
+Em **Configurações → Geral → Projetos Python**, escolha `pip` ou `uv`, decida se todos os projetos devem usar `.venv` e use as ações para gerar `requirements.txt` ou instalar suas dependências. Com `.venv` habilitada, o TsCIDE cria o ambiente dentro do projeto quando necessário, usa esse interpretador nas instalações e o ativa ao abrir o terminal integrado. Com a opção desabilitada, nenhuma `.venv` é criada. Se pip ou uv estiver ausente, a interface pede confirmação antes de usar o Python para instalar a ferramenta selecionada; nenhuma instalação acontece apenas ao abrir as configurações.
+
+> Para manter compatibilidade, os crates internos usam `quixi-*` e o diretório de dados continua em `~/.quixi`. O executável, a identidade visual, o atalho e a interface usam **TsCIDE**.
 
 ## O que este projeto faz, em palavras simples?
 
@@ -381,7 +386,7 @@ Há integrações para OpenRouter, OpenAI, Anthropic, Gemini, DeepSeek, RunPod S
 
 ### Catálogo de modelos OpenRouter
 
-Após configurar o OpenRouter, abra **Choose model** no chat. O seletor permite buscar por nome ou ID, atualizar o catálogo e filtrar por fornecedor, preço, contexto, ferramentas e modelos gratuitos. Os valores e capacidades vêm do catálogo e podem mudar; confira o preço e a disponibilidade no provedor antes de usar.
+Após configurar o OpenRouter, abra **Choose model** no chat. O seletor permite buscar por nome ou ID, atualizar o catálogo e filtrar por fornecedor, preço, contexto, ferramentas e modelos gratuitos. A lista mostra o catálogo completo e permite pesquisar qualquer modelo por nome ou ID. Os valores e capacidades vêm do catálogo e podem mudar; confira o preço e a disponibilidade no provedor antes de usar.
 
 - **Manual** usa o modelo escolhido.
 - **Automático** usa um roteador disponível, como Auto Router ou Auto Code, que escolhe o modelo por requisição.
@@ -422,7 +427,7 @@ No Linux, as dependências principais são `build-essential`, `pkg-config`, `lib
 
 ```bash
 cargo build --locked --release --workspace
-./target/release/QuixiDesk
+./target/release/TsCIDE
 ```
 
 | Comando | Finalidade |
@@ -460,7 +465,7 @@ powershell -ExecutionPolicy Bypass -File .\instalar-windows.ps1
 
 O script detecta uma instalação nova, pede consentimento e instala somente os pré-requisitos ausentes por canais oficiais: Rustup/Rust stable, Microsoft Visual Studio Build Tools com C++/Windows SDK e WebView2 Evergreen. O Build Tools pode solicitar elevação UAC e ocupar vários gigabytes. Depois, compila a versão release, instala o aplicativo somente para o usuário atual em `%LOCALAPPDATA%\Programs\TSCDesk` e cria atalhos no Desktop e no menu Iniciar.
 
-Na primeira instalação, o script pergunta se deseja abrir o TSCDesk. Pressionar Enter ou responder `N` encerra sem abrir. Em automações, escolha explicitamente `-AbrirAoFinal` ou `-NaoAbrirAoFinal`. Ao executar o instalador novamente sobre uma instalação gerenciada, a próxima abertura solicita uma nova senha mestra; os dados e o cofre anterior são preservados e a troca exige a senha atual.
+Na primeira instalação, o script pergunta se deseja abrir o TSCDesk. Pressionar Enter ou responder `N` encerra sem abrir. Em automações, escolha explicitamente `-AbrirAoFinal` ou `-NaoAbrirAoFinal`. Para reinstalar somente os arquivos do aplicativo e manter histórico, configurações, chaves de API e o cofre atual, execute `powershell -ExecutionPolicy Bypass -File .\instalar-windows.ps1 -Reinstalar`. O instalador recusa qualquer destino que se sobreponha a `%USERPROFILE%\.quixi`.
 
 Para instalar e abrir imediatamente:
 
@@ -494,7 +499,7 @@ Em PowerShell:
 
 ```powershell
 cargo build --locked --release --workspace
-.\target\release\QuixiDesk.exe
+.\target\release\TsCIDE.exe
 ```
 
 Para distribuição manual, mantenha os executáveis e `resources/` juntos. `QUIXI_RESOURCES_DIR` seleciona explicitamente os recursos quando necessário.
@@ -534,13 +539,13 @@ Execute os comandos a partir da raiz do repositório. Os dois primeiros são as 
 | Script | Função e operação |
 | --- | --- |
 | [`iniciar-chromeos.sh`](iniciar-chromeos.sh) | Instala na primeira execução e depois abre a instalação gerenciada no Linux do Chromebook. Ajuda: `bash iniciar-chromeos.sh --help`. `--instalar` atualiza; `--reinstalar` substitui releases gerenciadas; `--jobs N` define paralelismo (padrão 1); `--yes` autoriza dependências e Rust; `--skip-deps` e `--skip-build` reutilizam dependências ou binários; `--abrir` e `--nao-abrir` controlam a abertura; `--check` apenas diagnostica. Use `--` antes de argumentos destinados ao aplicativo. Exige sessão gráfica mesmo para instalar ou diagnosticar. |
-| [`instalar-windows.ps1`](instalar-windows.ps1) | Instalador do usuário no Windows: `powershell -ExecutionPolicy Bypass -File .\instalar-windows.ps1`. Use `-Diagnostico` para apenas verificar requisitos; `-Yes` para autorizar a instalação de dependências; `-PularDependencias` ou `-PularCompilacao` para reutilizar o que já existe; `-AbrirAoFinal` ou `-NaoAbrirAoFinal` para escolher a abertura; `-SemAtalhoDesktop` ou `-SemAtalhoMenuIniciar` para omitir atalhos; `-Destino <caminho>` para escolher onde instalar. |
+| [`instalar-windows.ps1`](instalar-windows.ps1) | Instalador do usuário no Windows: `powershell -ExecutionPolicy Bypass -File .\instalar-windows.ps1`. `-Reinstalar` substitui somente uma instalação gerenciada e preserva `%USERPROFILE%\.quixi`; use `-Diagnostico` para apenas verificar requisitos; `-Yes` para autorizar a instalação de dependências; `-PularDependencias` ou `-PularCompilacao` para reutilizar o que já existe; `-AbrirAoFinal` ou `-NaoAbrirAoFinal` para escolher a abertura; `-SemAtalhoDesktop` ou `-SemAtalhoMenuIniciar` para omitir atalhos; `-Destino <caminho>` para escolher onde instalar. |
 | [`scripts/install-linux.sh`](scripts/install-linux.sh) | Instalador direto para Debian/Ubuntu por usuário: `bash scripts/install-linux.sh --help`. `--reinstall` troca o release e remove releases antigos marcados; `--skip-deps`, `--skip-build`, `--jobs N`, `--prefix <caminho-absoluto>` e `--yes` controlam dependências, build, destino e consentimento. Cria `~/.local/bin/tscdesk` e um atalho; recusa conflitos não gerenciados e preserva dados pessoais. |
 | [`scripts/launch-linux.sh`](scripts/launch-linux.sh) | Launcher instalado, normalmente executado como `"$HOME/.local/bin/tscdesk"`, não diretamente do checkout. Aceita `--help` e `--check`; outros argumentos vão ao aplicativo. Localiza recursos, usa a sessão gráfica/D-Bus e tenta iniciar Secret Service. |
 | [`scripts/package-macos-app.sh`](scripts/package-macos-app.sh) | Compila e empacota no macOS: `./scripts/package-macos-app.sh` para release ou `./scripts/package-macos-app.sh debug`. **Apaga e recria o bundle de destino** (`dist/QuixiDesk.app` por padrão; altere com `QUIXI_APP_BUNDLE`). `QUIXI_APP_SYMLINK_RESOURCES=1` cria links para recursos de desenvolvimento; `QUIXI_INSTALL_HELPERS=0` evita substituir o helper em `~/.local/bin`. O script tenta assinatura ad hoc. |
 | [`scripts/package-bundled-skills.py`](scripts/package-bundled-skills.py) | Recria os arquivos `.skill` do manifesto `resources/bundled-skills/manifest.json` a partir de `resources/bundled-skills-extracted/`: `python3 scripts/package-bundled-skills.py`. **Sobrescreve os pacotes gerados**; revise as alterações. |
 | [`scripts/audit-product-assets.py`](scripts/audit-product-assets.py) | Auditoria somente de leitura de marca, arquivos, integridade e registros de redistribuição: `python3 scripts/audit-product-assets.py`. Retorna código diferente de zero quando encontra problemas. |
-| [`scripts/test-linux-ui.py`](scripts/test-linux-ui.py) | Smoke test Linux/WebKit em perfil sintético: compile primeiro `target/release/QuixiDesk` e execute `python3 scripts/test-linux-ui.py`. Exige Python, Xvfb, `xauth`, `dbus-run-session` e porta loopback livre. `--root <caminho>` altera o checkout, `--output <caminho>` escolhe onde salvar evidências e `--port <porta>` altera a porta de automação (padrão 19460). Não substitui teste em Chromebook. |
+| [`scripts/test-linux-ui.py`](scripts/test-linux-ui.py) | Smoke test Linux/WebKit em perfil sintético: compile primeiro `target/release/TsCIDE` e execute `python3 scripts/test-linux-ui.py`. Exige Python, Xvfb, `xauth`, `dbus-run-session` e porta loopback livre. `--root <caminho>` altera o checkout, `--output <caminho>` escolhe onde salvar evidências e `--port <porta>` altera a porta de automação (padrão 19460). Não substitui teste em Chromebook. |
 | [`scripts/test-local-ui-regressions.js`](scripts/test-local-ui-regressions.js) | Executa a suíte original de regressão da interface: primeiro `npm ci --prefix tests/ui`, depois `node scripts/test-local-ui-regressions.js`. Usa jsdom, não uma janela real. |
 | [`scripts/test-windows-storage.ps1`](scripts/test-windows-storage.ps1) | Teste nativo de armazenamento e recuperação no Windows com perfil sintético: compile release e execute `powershell -ExecutionPolicy Bypass -File .\scripts\test-windows-storage.ps1`. Os parâmetros opcionais `-Executable`, `-Resources`, `-OutputDirectory` e `-AutomationPort` selecionam binário, recursos, evidências e porta (padrão 19458). Abre o aplicativo e usa o clipboard do Windows; não aponte para perfil real. |
 | [`scripts/verify-actual-ipc-outputs.js`](scripts/verify-actual-ipc-outputs.js) | Comparador legado de IPC: `node scripts/verify-actual-ipc-outputs.js`, somente quando `asar-extracted/.vite/build/index.chunk-jPKPzV-P.js` e os JSONs de `reference/` forem preparados separadamente. Esses insumos não vêm no checkout; não é uma etapa normal de instalação ou teste. Use apenas insumos confiáveis. |

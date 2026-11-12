@@ -29,12 +29,14 @@ async function fixture({
   permissions = [],
   schedules = [],
   catalogModels = [],
+  openRouterModels = null,
   pickedFolder = null,
   folderPaths = {},
   sendGate = null,
   collabState = null,
   jobs = [],
   workspaceFiles = [],
+  pythonToolMissing = false,
 } = {}) {
   const dom = new JSDOM(
     '<!doctype html><div id="app"></div><div id="toasts"></div>',
@@ -98,6 +100,7 @@ async function fixture({
       },
     ],
   };
+  let pythonSettings = { installer: "pip", useVenv: true };
   const rpc = async (service, member, args = []) => {
     calls.push({ service, member, args });
     if (member === "getAll")
@@ -284,7 +287,26 @@ async function fixture({
   const api = async (route, body) => {
     calls.push({ route, body });
     if (route === "/__eipc__/open-external") return {ok:true};
+    if (route === "/api/quixi/python/settings") {
+      if (body) pythonSettings = { installer: body.installer, useVenv: body.useVenv };
+      return structuredClone(pythonSettings);
+    }
+    if (route === "/api/quixi/python/generate-requirements") return {ok:true,path:`${body.path}/requirements.txt`};
+    if (route === "/api/quixi/python/install-requirements") {
+      const installed = calls.some(call => call.route === "/api/quixi/python/install-tool");
+      return pythonToolMissing && !installed
+        ? {ok:false,missingTool:pythonSettings.installer,requiresConfirmation:true}
+        : {ok:true,installer:pythonSettings.installer};
+    }
+    if (route === "/api/quixi/python/install-tool") return {ok:true,installer:pythonSettings.installer};
+    if (route === "/api/quixi/python/terminal-environment") return pythonSettings.useVenv ? {useVenv:true,activateCommand:"activate-fixture"} : {useVenv:false,activateCommand:null};
     if (route === "/api/quixi/providers") return providers;
+    if (route.startsWith("/api/quixi/providers/openrouter/catalog") && openRouterModels) {
+      return { ok: true, models: openRouterModels, routers: [], count: openRouterModels.length, cached: true };
+    }
+    if (route.startsWith("/api/quixi/providers/usage?") && openRouterModels) {
+      return { totalRequests: 0, inputTokens: 0, outputTokens: 0, reportedCostUsd: 0, estimatedCostUsd: 0, totalErrors: 0, totalAttempts: 0, durationMs: 0 };
+    }
     if (route === "/api/quixi/providers/complete-onboarding") {
       if (body && typeof body.subagentModel === "string") {
         providers.subagentModel = body.subagentModel;
@@ -353,6 +375,9 @@ async function fixture({
     copy: async (text) => calls.push({ clipboard: text }),
     origin: "https://app.localhost",
   };
+  for (const file of ["i18n/en.js", "i18n/pt-BR.js", "i18n/es.js", "i18n.js"]) {
+    w.eval(fs.readFileSync(path.join(__dirname, "../../resources/ui", file), "utf8"));
+  }
   for (const name of ["workspace-workflows", "schedule-workflows", "capability-workflows", "chat-workflows"]) { const file=path.join(__dirname, "../../resources/ui/"+name+".js"); if(fs.existsSync(file)) w.eval(fs.readFileSync(file,"utf8")); }
   w.eval(source.replace('  function plainBody(text) {', '  window.testPlainBody = plainBody;\n  function plainBody(text) {'));
   await wait();
@@ -375,6 +400,69 @@ async function fixture({
   };
   return { w, sessions, projects, calls, click, type, close: () => dom.window.close() };
 }
+
+test("settings language selector updates the UI immediately and persists the choice", async () => {
+  const f = await fixture();
+  try {
+    await f.click("Settings");
+    let language = f.w.document.querySelector('[name="interfaceLanguage"]');
+    assert.ok(language);
+    language.value = "pt-BR";
+    language.dispatchEvent(new f.w.Event("change", { bubbles: true }));
+    await wait();
+    assert.equal(f.w.document.documentElement.lang, "pt-BR");
+    assert.equal(f.w.localStorage.getItem("tscide.language"), "pt-BR");
+    assert.match(f.w.document.querySelector(".settings-content").textContent, /Aparência/);
+    language = f.w.document.querySelector('[name="interfaceLanguage"]');
+    language.value = "es";
+    language.dispatchEvent(new f.w.Event("change", { bubbles: true }));
+    await wait();
+    assert.equal(f.w.document.documentElement.lang, "es");
+    assert.match(f.w.document.querySelector(".settings-content").textContent, /Apariencia/);
+  } finally { f.close(); }
+});
+
+test("Python settings persist installer and venv choices and use the current project", async () => {
+  const f = await fixture();
+  try {
+    await f.click("Existing conversation");
+    await f.click("Settings");
+    const panel = f.w.document.querySelector(".python-project-settings");
+    assert.ok(panel);
+    const installer = panel.querySelector("select");
+    installer.value = "uv";
+    installer.dispatchEvent(new f.w.Event("change", { bubbles: true }));
+    await wait();
+    let currentPanel = f.w.document.querySelector(".python-project-settings");
+    const venv = currentPanel.querySelector('input[type="checkbox"]');
+    venv.click();
+    await wait();
+    currentPanel = f.w.document.querySelector(".python-project-settings");
+    const generate = Array.from(currentPanel.querySelectorAll("button")).find(button => button.textContent.includes("requirements.txt"));
+    generate.click();
+    await wait();
+    assert.ok(f.calls.some(call => call.route === "/api/quixi/python/settings" && call.body?.installer === "uv"));
+    assert.ok(f.calls.some(call => call.route === "/api/quixi/python/settings" && call.body?.useVenv === false));
+    assert.ok(f.calls.some(call => call.route === "/api/quixi/python/generate-requirements" && call.body.path === "/workspace"));
+  } finally { f.close(); }
+});
+
+test("missing Python installer opens confirmation and runs installation only after Install", async () => {
+  const f = await fixture({ pythonToolMissing: true });
+  try {
+    await f.click("Existing conversation");
+    await f.click("Settings");
+    const panel = f.w.document.querySelector(".python-project-settings");
+    const install = Array.from(panel.querySelectorAll("button")).find(button => button.textContent === "Install dependencies");
+    install.click();
+    await wait();
+    assert.equal(f.calls.some(call => call.route === "/api/quixi/python/install-tool"), false);
+    assert.ok(f.w.document.querySelector('dialog[aria-label="Install Python tool?"]'));
+    await f.click("Install");
+    assert.equal(f.calls.filter(call => call.route === "/api/quixi/python/install-tool").length, 1);
+    assert.equal(f.calls.filter(call => call.route === "/api/quixi/python/install-requirements").length, 2);
+  } finally { f.close(); }
+});
 
 test("composer arrows recall prompts and restore drafts without stealing editing keys", async () => {
   const f = await fixture();
@@ -898,6 +986,30 @@ test("provider save distinguishes verified persistence and offers the encrypted 
     assert.match(failure.w.document.querySelector("#toasts").textContent,
       /Master password configured/);
   } finally { failure.close(); }
+});
+
+test("large OpenRouter catalogs display every model and searching does not refetch session usage", async () => {
+  const openRouterModels = Array.from({length: 1000}, (_, i) => ({
+    id: `fixture/model-${String(i).padStart(4, "0")}`,
+    name: `Fixture model ${String(i).padStart(4, "0")}`,
+    vendor: "fixture", contextLength: 128000, supportsTools: true,
+    promptPricePerMillion: 1, completionPricePerMillion: 2,
+  }));
+  const f = await fixture({providerId: "openrouter", openRouterModels});
+  try {
+    await f.click("Existing conversation");
+    await f.click("Choose model");
+    await wait(); // Let the initial catalog load and its usage refresh settle.
+    assert.equal(f.w.document.querySelectorAll(".or-model-row").length, 1000);
+    const usageCount = () => f.calls.filter(c => c.route?.startsWith("/api/quixi/providers/usage?")).length;
+    const beforeSearch = usageCount();
+    f.type('[aria-label="Filter models"]', "model-0999");
+    assert.equal(f.w.document.querySelectorAll(".or-model-row").length, 1);
+    assert.ok(f.w.document.querySelector('[aria-label="fixture/model-0999"]'));
+    assert.equal(usageCount(), beforeSearch, "search and pagination should not refetch session usage");
+    await f.click("fixture/model-0999");
+    assert.ok(f.calls.some(c => c.body?.selectedModel === "fixture/model-0999"));
+  } finally { f.close(); }
 });
 
 for (const providerId of ["custom", "openrouter"])

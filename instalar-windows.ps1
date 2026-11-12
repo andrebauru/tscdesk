@@ -5,6 +5,7 @@ param(
     [switch]$Yes,
     [switch]$PularDependencias,
     [switch]$PularCompilacao,
+    [switch]$Reinstalar,
     [switch]$SemAtalhoDesktop,
     [switch]$SemAtalhoMenuIniciar,
     [switch]$AbrirAoFinal,
@@ -20,7 +21,7 @@ $manifesto = Join-Path $raizProjeto 'Cargo.toml'
 $diretorioRelease = Join-Path $raizProjeto 'target\release'
 $marcadorGerenciado = '.tscdesk-instalador-windows'
 $executaveis = @(
-    'QuixiDesk.exe',
+    'TsCIDE.exe',
     'quixi-disclaimer.exe',
     'quixi-chrome-native-host.exe',
     'quixi-ssh-askpass.exe',
@@ -249,6 +250,21 @@ function Solicitar-NovaSenhaMestra {
     Write-Host 'O TsCIDE solicitara uma nova senha mestra na proxima abertura.'
 }
 
+# Impede que binarios substituiveis sejam instalados sobre dados pessoais persistentes.
+function Validar-DestinoForaDosDados {
+    param(
+        [Parameter(Mandatory)][string]$DestinoInstalacao,
+        [Parameter(Mandatory)][string]$DiretorioDados
+    )
+
+    $destinoNormalizado = ([IO.Path]::GetFullPath($DestinoInstalacao)).TrimEnd('\') + '\'
+    $dadosNormalizados = ([IO.Path]::GetFullPath($DiretorioDados)).TrimEnd('\') + '\'
+    if ($destinoNormalizado.StartsWith($dadosNormalizados, [StringComparison]::OrdinalIgnoreCase) -or
+        $dadosNormalizados.StartsWith($destinoNormalizado, [StringComparison]::OrdinalIgnoreCase)) {
+        Parar-Instalacao "o destino '$DestinoInstalacao' se sobrepoe ao diretorio de dados '$DiretorioDados'. Historico, configuracoes e credenciais nao serao colocados em risco."
+    }
+}
+
 if (-not (Test-Path -LiteralPath $manifesto -PathType Leaf)) {
     Parar-Instalacao 'execute este script a partir da copia completa do projeto.'
 }
@@ -310,14 +326,19 @@ else {
     Write-Host '[1/4] Usando os executaveis ja compilados...'
 }
 
-$executavelPrincipal = Join-Path $diretorioRelease 'QuixiDesk.exe'
+$executavelPrincipal = Join-Path $diretorioRelease 'TsCIDE.exe'
 if (-not (Test-Path -LiteralPath $executavelPrincipal -PathType Leaf)) {
-    Parar-Instalacao "QuixiDesk.exe nao existe em '$diretorioRelease'. Execute novamente sem -PularCompilacao."
+    Parar-Instalacao "TsCIDE.exe nao existe em '$diretorioRelease'. Execute novamente sem -PularCompilacao."
 }
 
 $destinoCompleto = [IO.Path]::GetFullPath($Destino)
+$diretorioDadosPersistentes = [IO.Path]::GetFullPath((Join-Path $env:USERPROFILE '.quixi'))
+Validar-DestinoForaDosDados -DestinoInstalacao $destinoCompleto -DiretorioDados $diretorioDadosPersistentes
 $marcadorDestino = Join-Path $destinoCompleto $marcadorGerenciado
 $primeiraInstalacao = -not (Test-Path -LiteralPath $destinoCompleto)
+if ($Reinstalar -and $primeiraInstalacao) {
+    Parar-Instalacao "nao ha uma instalacao em '$destinoCompleto' para reinstalar. Execute sem -Reinstalar para a primeira instalacao."
+}
 if ((Test-Path -LiteralPath $destinoCompleto) -and -not (Test-Path -LiteralPath $marcadorDestino -PathType Leaf)) {
     Parar-Instalacao "o destino '$destinoCompleto' ja existe e nao pertence a este instalador. Escolha outro com -Destino."
 }
@@ -331,6 +352,9 @@ if (Test-Path -LiteralPath $backup) {
 }
 
 try {
+    if ($Reinstalar) {
+        Write-Host "Reinstalacao segura: preservando historico, configuracoes e credenciais em $diretorioDadosPersistentes" -ForegroundColor Cyan
+    }
     Write-Host '[2/4] Preparando os arquivos...'
     New-Item -ItemType Directory -Path $conteudoTemporario -Force | Out-Null
     Copy-Item -LiteralPath (Join-Path $raizProjeto 'resources') -Destination (Join-Path $conteudoTemporario 'resources') -Recurse
@@ -371,7 +395,7 @@ try {
     }
 
     Write-Host '[4/4] Criando atalhos...'
-    $executavelInstalado = Join-Path $destinoCompleto 'QuixiDesk.exe'
+    $executavelInstalado = Join-Path $destinoCompleto 'TsCIDE.exe'
     if (-not $SemAtalhoMenuIniciar) {
         $menuIniciar = Join-Path ([Environment]::GetFolderPath('Programs')) 'TsCIDE\TsCIDE.lnk'
         try {
@@ -392,7 +416,7 @@ try {
     }
 
     Write-Host "TsCIDE instalado com sucesso em: $destinoCompleto" -ForegroundColor Green
-    if (-not $primeiraInstalacao) {
+    if ((-not $primeiraInstalacao) -and (-not $Reinstalar)) {
         Solicitar-NovaSenhaMestra
     }
     if (Confirmar-PrimeiraAbertura -PrimeiraInstalacao $primeiraInstalacao) {

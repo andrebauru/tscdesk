@@ -21,12 +21,15 @@ fn permits(name: &str, edits: bool) -> bool {
         )
 }
 fn summary(record: &Value) -> Value {
-    let mut v = record.clone();
-    if let Some(o) = v.as_object_mut() {
-        o.remove("messages");
-        o.remove("prompt");
+    match record.as_object() {
+        Some(fields) => Value::Object(
+            fields.iter()
+                .filter(|(key, _)| *key != "messages" && *key != "prompt")
+                .map(|(key, value)| (key.clone(), value.clone()))
+                .collect(),
+        ),
+        None => record.clone(),
     }
-    v
 }
 fn root_key(session: &str) -> String {
     format!("{:x}", Sha256::digest(session.as_bytes()))
@@ -487,6 +490,14 @@ impl QuixiEngine {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn summary_keeps_all_other_fields_without_copying_history() {
+        let record = json!({"prompt":"private assignment", "messages":[{"content":"large history"}], "agentId":"child", "extra":{"future":true}});
+        assert_eq!(summary(&record), json!({"agentId":"child", "extra":{"future":true}}));
+        assert_eq!(summary(&json!([1, 2])), json!([1, 2]));
+        assert_eq!(record["messages"][0]["content"], "large history");
+    }
     use crate::providers::{ProviderManager, ProviderModelInfo};
     use std::io::{BufRead, Read, Write};
     fn fixture() -> (Arc<QuixiEngine>, String, PathBuf) {

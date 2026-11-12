@@ -2,6 +2,13 @@
 (() => {
   "use strict";
   const { api, rpc, copy } = window.quixi;
+  const i18n = window.tscI18n || {
+    t: (_key, _values, fallback) => fallback || _key,
+    getLocale: () => "en",
+    setLocale: () => {},
+    apply: () => {},
+  };
+  const t = (key, fallback, values) => window.tscI18n ? i18n.t(key, values) : fallback;
   const root = document.getElementById("app");
   const state = {
     page: "new",
@@ -20,6 +27,7 @@
     folder: "",
     project: null,
     permission: "default",
+    pythonSettings: { installer: "pip", useVenv: true },
     browser: false,
     browserState: null,
     streams: new Map(),
@@ -355,6 +363,70 @@
     if ((vault.setupRequired || (vault.configured && !vault.unlocked && state.providers.credentialStorageError)) && !document.querySelector('dialog[data-master-vault]')) {
       masterVaultDialog(vault.setupRequired ? "configure" : (vault.configured ? "unlock" : "configure"), vault.setupRequired);
     }
+  }
+  // Carrega as preferências globais usadas pelos projetos Python.
+  async function loadPythonSettings() {
+    state.pythonSettings = await api("/api/quixi/python/settings");
+  }
+
+  async function savePythonSettings(next) {
+    const result = await api("/api/quixi/python/settings", next);
+    if (result?.error) throw new Error(result.error);
+    state.pythonSettings = result;
+    renderPage();
+  }
+
+  function pythonProjectPanel() {
+    const status = el("div", { class: "hint", role: "status", "aria-live": "polite" });
+    const folder = () => currentFolder();
+    const requireFolder = () => {
+      const path = folder();
+      if (!path) throw new Error(t("python.folderRequired", "Choose a project folder before managing Python dependencies."));
+      return path;
+    };
+    const runAction = async (route, success) => {
+      status.textContent = t("python.working", "Working…");
+      try {
+        const result = await api(route, { path: requireFolder() });
+        if (result?.error) throw new Error(result.error);
+        status.textContent = success;
+        return result;
+      } catch (error) {
+        status.textContent = error.message;
+        throw error;
+      }
+    };
+    const installDependencies = async () => {
+      const result = await runAction("/api/quixi/python/install-requirements", t("python.installed", "Dependencies installed."));
+      if (!result?.requiresConfirmation) return;
+      status.textContent = t("python.toolMissing", "The selected installer is not available.");
+      confirmDialog(
+        t("python.installToolTitle", "Install Python tool?"),
+        t("python.installToolDescription", "The selected tool is missing. TsCIDE can use Python to install it after you confirm."),
+        async () => {
+          await runAction("/api/quixi/python/install-tool", t("python.toolInstalled", "Installer prepared."));
+          await runAction("/api/quixi/python/install-requirements", t("python.installed", "Dependencies installed."));
+        },
+        t("python.install", "Install"),
+      );
+    };
+    return el("section", { class: "settings-section python-project-settings" },
+      el("h2", { style: "margin-top:30px" }, t("python.title", "Python projects")),
+      el("p", { class: "muted" }, t("python.description", "Generate requirements.txt and install project dependencies with pip or uv.")),
+      field(t("python.installer", "Dependency installer"), select([
+        ["pip", "pip"], ["uv", "uv"],
+      ], state.pythonSettings.installer, (installer) => savePythonSettings({ ...state.pythonSettings, installer }).catch(error => toast(error.message, true))),
+      t("python.installerHint", "If the selected tool is missing, TsCIDE asks before installing it with Python.")),
+      el("label", { class: "checkbox-row" },
+        el("input", { type: "checkbox", checked: state.pythonSettings.useVenv, onChange: (event) => savePythonSettings({ ...state.pythonSettings, useVenv: event.target.checked }).catch(error => toast(error.message, true)) }),
+        el("span", {}, t("python.venv", "Use a .venv for every Python project"))),
+      el("p", { class: "hint" }, t("python.venvHint", "When disabled, TsCIDE does not create a virtual environment and uses the selected system Python.")),
+      el("p", { class: "hint" }, folder() ? `${t("python.currentProject", "Current project")}: ${folder()}` : t("python.noProject", "No project folder selected.")),
+      el("div", { class: "form-actions" },
+        button(t("python.generate", "Generate requirements.txt"), () => runAction("/api/quixi/python/generate-requirements", t("python.generated", "requirements.txt generated.")).catch(() => {}), "quiet"),
+        button(t("python.installRequirements", "Install dependencies"), () => installDependencies().catch(() => {}), "primary")),
+      status,
+    );
   }
 
   // Keeps master passwords inside password inputs and sends them only to the local engine.
@@ -3568,21 +3640,21 @@
   }
   function settingsPage(host) {
     const tabs = [
-      ["general", "General"],
-      ["providers", "Providers"],
-      ["security", "Security"],
-      ["privacy", "Privacy & data"],
-      ["about", "About"],
+      ["general", t("common.general", "General")],
+      ["providers", t("common.providers", "Providers")],
+      ["security", t("common.security", "Security")],
+      ["privacy", t("common.privacy", "Privacy & data")],
+      ["about", t("common.about", "About")],
     ];
     const content = el("section", { class: "settings-content" });
     host.replaceChildren(
-      header("Settings", "Make the workspace yours."),
+      header(t("common.settings", "Settings"), t("settings.subtitle", "Make the workspace yours.")),
       el(
         "div",
         { class: "settings-layout" },
         el(
           "nav",
-          { class: "settings-nav", "aria-label": "Settings sections" },
+          { class: "settings-nav", "aria-label": t("settings.sections", "Settings sections") },
           ...tabs.map(([id, label]) =>
             button(
               label,
@@ -3599,19 +3671,19 @@
     );
     if (state.settingsTab === "general") {
       content.append(
-        el("h2", {}, "Appearance"),
+        el("h2", {}, t("settings.appearance.title", "Appearance")),
         el(
           "p",
           { class: "muted" },
-          "Choose a look that feels right for your workspace.",
+          t("settings.appearance.description", "Choose a look that feels right for your workspace."),
         ),
         el(
           "div",
-          { class: "theme-options", role: "group", "aria-label": "Theme" },
+          { class: "theme-options", role: "group", "aria-label": t("settings.theme.title", "Theme") },
           ...[
-            ["light", "Light"],
-            ["dark", "Dark"],
-            ["system", "System"],
+            ["light", t("settings.theme.light", "Light")],
+            ["dark", t("settings.theme.dark", "Dark")],
+            ["system", t("settings.theme.system", "System")],
           ].map(([value, label]) => {
             const choice = button(
               [
@@ -3648,14 +3720,29 @@
             return choice;
           }),
         ),
-        el("h2", { style: "margin-top:30px" }, "New tasks"),
+        el("h2", { style: "margin-top:30px" }, t("settings.language.title", "Language")),
         field(
-          "Default permission mode",
+          t("settings.language.title", "Language"),
           select(
             [
-              ["default", "Manual"],
-              ["acceptEdits", "Allow file edits"],
-              ["auto", "Auto"],
+              ["en", t("settings.language.english", "English")],
+              ["pt-BR", t("settings.language.portuguese", "Português")],
+              ["es", t("settings.language.spanish", "Español")],
+            ],
+            i18n.getLocale(),
+            (value) => i18n.setLocale(value),
+            { "aria-label": t("settings.language.title", "Language"), name: "interfaceLanguage" },
+          ),
+          t("settings.language.description", "Choose the language used by the TsCIDE interface."),
+        ),
+        el("h2", { style: "margin-top:30px" }, t("settings.tasks.title", "New tasks")),
+        field(
+          t("settings.permissions.title", "Default permission mode"),
+          select(
+            [
+              ["default", t("settings.permissions.manual", "Manual")],
+              ["acceptEdits", t("settings.permissions.edits", "Allow file edits")],
+              ["auto", t("settings.permissions.auto", "Auto")],
             ],
             state.permission,
             (v) => {
@@ -3663,13 +3750,14 @@
               localStorage.setItem("quixi.permission", v);
             },
           ),
-          "Manual asks before file changes and commands. Allow file edits permits changes for the task; commands still ask. Auto permits tool actions.",
+          t("settings.permissions.hint", "Manual asks before file changes and commands. Allow file edits permits changes for the task; commands still ask. Auto permits tool actions."),
         ),
         el(
           "div",
           { class: "notice" },
-          "Language: English. Use ⌘/Ctrl+N for a new task, ⌘/Ctrl+K to search, and ⌘/Ctrl+, for settings.",
+          t("settings.shortcuts", "Use ⌘/Ctrl+N for a new task, ⌘/Ctrl+K to search, and ⌘/Ctrl+, for settings."),
         ),
+        pythonProjectPanel(),
       );
       capabilityUI.renderDesktopStatus(content);
     } else if (state.settingsTab === "providers") {
@@ -4016,21 +4104,27 @@
       "aria-label": "API key", placeholder: p.apiKeyMasked
         ? p.apiKeyMasked + " · Deixe em branco para manter a chave salva"
         : "API key do RunPod" });
-    const model = el("input", { type: "text", name: "selectedModel", value: p.selectedModel || "qwen2.5-coder:7b",
-      required: true, autocomplete: "off", spellcheck: "false", "aria-label": "Model ID" });
+    const usaModeloPadrao = p.selectedModel === "runpod/endpoint-default" || !!p.useEndpointDefault;
+    const model = el("input", { type: "text", name: "selectedModel", value: usaModeloPadrao ? "" : (p.selectedModel || "qwen2.5-coder:7b"),
+      required: !usaModeloPadrao, disabled: usaModeloPadrao, autocomplete: "off", spellcheck: "false", "aria-label": "Model ID" });
+    const useDefault = el("input", { type: "checkbox", name: "useEndpointDefault", checked: usaModeloPadrao,
+      "aria-label": "Usar modelo padrão do endpoint", onChange: (event) => {
+        model.disabled = event.target.checked;
+        model.required = !event.target.checked;
+      } });
     const status = el("div", { class: "form-error", role: "status", "aria-live": "polite" });
     const safeMessage = message => key.value ? String(message).split(key.value).join("[credential redacted]") : String(message);
-    const payload = () => {
+    const payload = (requireModel = true) => {
       if (!endpoint.value.trim()) throw new Error("Informe o Endpoint ID do RunPod.");
-      if (!model.value.trim()) throw new Error("Informe o Model ID do worker.");
-      return { providerId: p.id, endpointId: endpoint.value.trim(), apiKey: key.value, selectedModel: model.value.trim() };
+      if (requireModel && !useDefault.checked && !model.value.trim()) throw new Error("Informe o Model ID do worker ou selecione o modelo padrão do endpoint.");
+      return { providerId: p.id, endpointId: endpoint.value.trim(), apiKey: key.value.trim(), selectedModel: useDefault.checked ? "" : model.value.trim(), useEndpointDefault: useDefault.checked };
     };
     let busy = false;
     const test = button("Testar conexão", async () => {
       if (busy) return;
       busy = true; test.disabled = save.disabled = true;
       try {
-        const config = payload();
+        const config = payload(false);
         status.textContent = "Verificando configuração e /health (sem inferência)…";
         const result = await rpc("Providers", "testProvider", [config]);
         status.textContent = safeMessage(result?.message || result?.error || (result?.ok ? "Health disponível; inferência não testada." : "Não foi possível verificar a conexão."));
@@ -4044,7 +4138,15 @@
         const config = payload();
         status.textContent = "Salvando configuração (sem inferência)…";
         const result = await rpc("Providers", "saveProvider", [{ ...config, setAsActive: true }]);
-        if (!result || result.error) throw new Error(result?.error || "Não foi possível confirmar o salvamento.");
+        if (!result || result.error) {
+          status.textContent = safeMessage(result?.error || "Não foi possível confirmar o salvamento.");
+          if (result?.credentialStorageFailure) {
+            status.append(el("div", { class: "form-actions" }, button(
+              result.credentialVault?.configured ? "Unlock encrypted credential vault" : "Configure encrypted master-password vault",
+              () => masterVaultDialog(result.credentialVault?.configured ? "unlock" : "configure"), "quiet")));
+          }
+          return;
+        }
         await loadProviders();
         await changed?.();
         d.close();
@@ -4059,7 +4161,8 @@
       el("p", { class: "hint runpod-note" }, runpodNote),
       field("Endpoint ID", endpoint, "ID do endpoint Serverless, não uma URL."),
       field("API key", key, "Deixe em branco para manter a chave salva. Nunca cole uma chave na conversa."),
-      field("Model ID", model, "Nome exato do modelo instalado no worker. Não há descoberta automática de modelos."),
+      el("label", { class: "runpod-default-model" }, useDefault, " Usar modelo padrão do endpoint"),
+      field("Model ID", model, "Nome exato do modelo instalado no worker. Com o modelo padrão, o endpoint escolhe o modelo."),
       status,
       el("div", { class: "form-actions" }, button("Cancel", () => d.close(), "quiet"), test, save),
     ]);
@@ -4360,7 +4463,6 @@
       type: "search",
       placeholder: "Find a model…",
       "aria-label": "Filter models",
-      onInput: () => draw(),
     });
     const catalogStatus = el("p", { class: "hint", role: "status" });
     const refresh = button("Refresh models", async () => {
@@ -4606,6 +4708,8 @@
       );
 
       drawList(p);
+      drawOpenRouterExtras(p);
+      usagePanel();
     }
 
     function drawList(p) {
@@ -4660,6 +4764,9 @@
       catalogStatus.textContent = catalog
         ? `${catalog.count || source.length} modelos · ${catalog.cached ? "cache local" : "atualizado agora"}${catalog.stale ? " · cache antigo" : ""}${catalog.error ? " · " + catalog.error : ""}`
         : "Catálogo ainda não carregado. Use Refresh catalog para buscar a lista completa do OpenRouter.";
+    }
+
+    function drawOpenRouterExtras(p) {
       additions.replaceChildren();
       if (["custom", "openrouter"].includes(p.id)) {
         const input = el("input", {
@@ -4719,7 +4826,6 @@
           ),
         );
       }
-      usagePanel();
     }
 
     function draw() {
@@ -5046,6 +5152,13 @@
         }
         const ptyKey = "dock-" + s.sessionId;
         await rpc(service(s), "startShellPty", [ptyKey, folder]);
+        try {
+          const environment = await api("/api/quixi/python/terminal-environment", { path: folder });
+          if (environment?.activateCommand)
+            await rpc(service(s), "writeShellPty", [ptyKey, environment.activateCommand + "\n"]);
+        } catch (error) {
+          toast(error.message, true);
+        }
         const screen = el("pre", { class: "code-preview dock-terminal-screen" }, "Connecting…");
         const refreshScreen = async () => {
           if (!drawer.isConnected || state.dockTab !== "terminal") { stopTermPoll(); return; }
@@ -5253,6 +5366,7 @@
     );
   });
   async function boot() {
+    i18n.apply();
     applyTheme();
     state.permission = localStorage.getItem("quixi.permission") || "default";
     document.body.dataset.platform = /Mac/.test(navigator.platform)
@@ -5261,7 +5375,7 @@
         ? "windows"
         : "linux";
     try {
-      await Promise.all([loadSessions(), loadProjects(), loadProviders(), refreshAgentState()]);
+      await Promise.all([loadSessions(), loadProjects(), loadProviders(), loadPythonSettings(), refreshAgentState()]);
       agentPolling = true;
       scheduleAgentPoll();
       state.folder = ""; // A new conversation has no implicit access to the source checkout.
@@ -5282,6 +5396,10 @@
       );
     }
   }
+  addEventListener("tscide:language-changed", () => {
+    if (state.page === "settings") renderPage();
+    else i18n.apply();
+  });
   addEventListener("keydown", (e) => {
     const command = e.metaKey || e.ctrlKey;
     if (command && e.key.toLowerCase() === "f" && state.page === "chat") {

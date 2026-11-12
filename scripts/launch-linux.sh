@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Installed beside QuixiDesk; never depend on the source checkout or caller's cwd.
+# Installed beside TsCIDE; never depend on the source checkout or caller's cwd.
 set -euo pipefail
 
 usage() {
@@ -26,7 +26,7 @@ if [[ ! ${QUIXI_WORKSPACE+x} ]]; then
 fi
 export PATH="$ROOT/bin:$PATH"
 [[ -n "${WAYLAND_DISPLAY:-}" || -n "${DISPLAY:-}" ]] || fail 'No graphical session: DISPLAY and WAYLAND_DISPLAY are unset. Open a Crostini desktop terminal.'
-[[ -x "$ROOT/bin/QuixiDesk" ]] || fail "Missing executable: $ROOT/bin/QuixiDesk"
+[[ -x "$ROOT/bin/TsCIDE" ]] || fail "Missing executable: $ROOT/bin/TsCIDE"
 [[ -f "$QUIXI_RESOURCES_DIR/ui/index.html" ]] || fail "Missing UI resources: $QUIXI_RESOURCES_DIR/ui/index.html"
 
 # Some Crostini terminals omit the address while the user's session bus exists.
@@ -79,6 +79,6 @@ if [[ -z "${DBUS_SESSION_BUS_ADDRESS:-}" ]]; then
             gnome-keyring-daemon --start --components=secrets >/dev/null 2>&1 || true
         fi
         exec "$@"
-    ' bash "$ROOT/bin/QuixiDesk" "$@"
+    ' bash "$ROOT/bin/TsCIDE" "$@"
 fi
-exec "$ROOT/bin/QuixiDesk" "$@"
+exec "$ROOT/bin/TsCIDE" "$@"

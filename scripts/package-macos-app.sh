@@ -91,8 +91,8 @@ cat > "$CONTENTS/Info.plist" <<EOF
 EOF
 
 echo "[3/5] Copying compiled Rust binaries into Contents/MacOS and Contents/Helpers..."
-cp "$TARGET_DIR/QuixiDesk" "$CONTENTS/MacOS/QuixiDesk"
-chmod +x "$CONTENTS/MacOS/QuixiDesk"
+cp "$TARGET_DIR/TsCIDE" "$CONTENTS/MacOS/TsCIDE"
+chmod +x "$CONTENTS/MacOS/TsCIDE"
 
 for helper in quixi-disclaimer quixi-chrome-native-host quixi-ssh-askpass quixi-guest-daemon quixi-mcp-builtin quixi-mcp-worker; do
     if [ -f "$TARGET_DIR/$helper" ]; then

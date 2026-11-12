@@ -97,6 +97,10 @@ impl QuixiEngine {
     /// Reconcile run state with its conversation. "Finished" means the turn ended,
     /// not a guarantee that the model accomplished the user's requested work.
     pub fn scheduled_task_list(&self) -> Vec<Value> {
+        self.reconcile_scheduled_tasks(true)
+    }
+
+    fn reconcile_scheduled_tasks(&self, include_rows: bool) -> Vec<Value> {
         let _guard = self.schedule_dispatch.lock();
         let mut tasks = self.scheduled_tasks.write();
         let sessions = self.agent_sessions.read();
@@ -159,6 +163,9 @@ impl QuixiEngine {
                 *task = updated;
             }
         }
+        if !include_rows {
+            return Vec::new();
+        }
         let mut rows: Vec<_> = tasks
             .values()
             .filter(|task| task["status"] != "deleted")
@@ -190,7 +197,7 @@ impl QuixiEngine {
         self.dispatch_schedule(id, Utc::now().timestamp_millis(), false)
     }
     pub(crate) fn dispatch_due_schedules(self: &Arc<Self>, now: i64) {
-        self.scheduled_task_list();
+        self.reconcile_scheduled_tasks(false);
         let ids: Vec<String> = self
             .scheduled_tasks
             .read()

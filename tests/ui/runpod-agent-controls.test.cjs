@@ -60,6 +60,7 @@ async function fixture({ configured = true, paused = false, kind = "task", setRe
     origin: "https://app.localhost", copy: async () => {},
     api: async (route, body) => {
       calls.push({ route });
+      if (route === "/api/quixi/python/settings") return { installer: "pip", useVenv: true };
       if (route === "/api/quixi/providers") return providers;
       if (route === "/api/quixi/providers/complete-onboarding") return providers;
       throw new Error("Unexpected frontend API: " + route);
@@ -167,7 +168,7 @@ test("RunPod blank-key save preserves the mask, accepts endpoint/model edits and
     await f.click("Save & use provider");
     const saved = providerCalls(f);
     assert.equal(saved.length, 1); assert.equal(saved[0].member, "saveProvider");
-    assert.deepEqual(saved[0].args[0], { providerId: "runpod-ollama", endpointId: "another-endpoint", apiKey: "", selectedModel: "qwen2.5-coder:14b", setAsActive: true });
+    assert.deepEqual(saved[0].args[0], { providerId: "runpod-ollama", endpointId: "another-endpoint", apiKey: "", selectedModel: "qwen2.5-coder:14b", useEndpointDefault: false, setAsActive: true });
     assert.equal(f.provider.apiKeyMasked, "••••fixture");
     await f.click("Configure");
     assert.equal(f.w.document.querySelector('[name="apiKey"]').value, "");
@@ -201,6 +202,39 @@ test("RunPod connection check is explicit-only, uses the health RPC and never lo
     await f.click("Configure");
     assert.equal(f.w.document.querySelector('[name="apiKey"]').value, "");
     assert.match(f.w.document.querySelector('[name="apiKey"]').placeholder, /••••replacement/);
+  } finally { f.close(); }
+});
+
+test("RunPod health test does not require a model, while saving still does", async () => {
+  const f = await fixture();
+  try {
+    await f.openProvider();
+    f.type('[name="selectedModel"]', "");
+    await f.click("Testar conexão");
+    assert.equal(providerCalls(f).length, 1);
+    assert.equal(providerCalls(f)[0].member, "testProvider");
+    await f.click("Save & use provider");
+    assert.equal(providerCalls(f).length, 1);
+    assert.match(f.w.document.querySelector('dialog[aria-label="RunPod Serverless"] [role="status"]').textContent, /Model ID/);
+  } finally { f.close(); }
+});
+
+test("RunPod endpoint-default mode disables Model ID and saves it empty", async () => {
+  const f = await fixture();
+  try {
+    await f.openProvider();
+    const checkbox = f.w.document.querySelector('[name="useEndpointDefault"]');
+    checkbox.click();
+    const model = f.w.document.querySelector('[name="selectedModel"]');
+    assert.equal(model.disabled, true);
+    assert.equal(model.required, false);
+    await f.click("Save & use provider");
+    const saved = providerCalls(f);
+    assert.equal(saved.length, 1);
+    assert.deepEqual(saved[0].args[0], {
+      providerId: "runpod-ollama", endpointId: "endpoint-fixture", apiKey: "",
+      selectedModel: "", useEndpointDefault: true, setAsActive: true,
+    });
   } finally { f.close(); }
 });
 

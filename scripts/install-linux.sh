@@ -234,7 +234,7 @@ try:
     entry = ('[Desktop Entry]\nType=Application\nName=TsCIDE\n' + desktop_mark +
              '\nExec=/usr/bin/env -- ' + desktop_exec(str(launcher)) + '\nIcon=' +
              desktop_string(str(prefix / 'current/resources' / icon)) +
-             '\nTerminal=false\nStartupWMClass=QuixiDesk\nCategories=Development;\n').encode()
+             '\nTerminal=false\nStartupWMClass=TsCIDE\nCategories=Development;\n').encode()
     prefix.mkdir(parents=True, exist_ok=True)
     # Directory locking avoids lock-file symlinks and serializes managed updates.
     with contextlib.ExitStack() as stack:
@@ -375,9 +375,9 @@ if (( ! SKIP_BUILD )); then
     "${CARGO[@]}" build --manifest-path "$SOURCE_ROOT/Cargo.toml" --target-dir "$SOURCE_ROOT/target" \
         --locked --release --workspace --jobs "$JOBS"
 fi
-[[ -x "$SOURCE_ROOT/target/release/QuixiDesk" ]] || fail 'Missing executable target/release/QuixiDesk; build first.'
+[[ -x "$SOURCE_ROOT/target/release/TsCIDE" ]] || fail 'Missing executable target/release/TsCIDE; build first.'
 mkdir -p "$TEMP_STAGE/payload/bin"
-cp -L -- "$SOURCE_ROOT/target/release/QuixiDesk" "$TEMP_STAGE/payload/bin/QuixiDesk"
+cp -L -- "$SOURCE_ROOT/target/release/TsCIDE" "$TEMP_STAGE/payload/bin/TsCIDE"
 for helper in quixi-mcp-builtin quixi-chrome-native-host quixi-ssh-askpass quixi-disclaimer quixi-guest-daemon quixi-mcp-worker; do
     if [[ -f "$SOURCE_ROOT/target/release/$helper" ]]; then
         cp -L -- "$SOURCE_ROOT/target/release/$helper" "$TEMP_STAGE/payload/bin/$helper"

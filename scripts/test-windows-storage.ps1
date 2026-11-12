@@ -1,6 +1,6 @@
 # Native Windows integration test. All storage failures affect only a fresh fixture profile.
 param(
-    [string]$Executable = (Join-Path $PSScriptRoot '..\target\release\QuixiDesk.exe'),
+    [string]$Executable = (Join-Path $PSScriptRoot '..\target\release\TsCIDE.exe'),
     [string]$Resources = (Join-Path $PSScriptRoot '..\resources'),
     [string]$OutputDirectory = (Join-Path $env:TEMP ('quixi-windows-storage-' + [guid]::NewGuid())),
     [int]$AutomationPort = 19458
