@@ -4094,7 +4094,7 @@
   }
   const runpodNote = "RunPod Serverless usa fila (queue-based) e pode ter cold start. A resposta chega completa; streaming e ferramentas (tools) não estão comprovados. Testar conexão consulta somente /health: health não comprova inferência e não inicia uma tarefa de GPU.";
   function isRunpodProvider(p) {
-    return p.id === "runpod-ollama" || p.apiFormat === "runpod";
+    return p.id === "runpod-ollama" || String(p.apiFormat || "").startsWith("runpod");
   }
   async function runpodProviderEditor(p, changed) {
     const endpoint = el("input", { type: "text", name: "endpointId", value: p.endpointId || "",
@@ -4112,12 +4112,17 @@
         model.disabled = event.target.checked;
         model.required = !event.target.checked;
       } });
+    const workerFormat = select([
+      ["runpod-ollama", "Ollama nativo (recomendado)"],
+      ["runpod-openai", "OpenAI encapsulado (worker legado)"],
+    ], p.apiFormat === "runpod-openai" ? "runpod-openai" : "runpod-ollama", null,
+    { name: "runpodPayloadFormat", "aria-label": "Formato do worker RunPod" });
     const status = el("div", { class: "form-error", role: "status", "aria-live": "polite" });
     const safeMessage = message => key.value ? String(message).split(key.value).join("[credential redacted]") : String(message);
     const payload = (requireModel = true) => {
       if (!endpoint.value.trim()) throw new Error("Informe o Endpoint ID do RunPod.");
       if (requireModel && !useDefault.checked && !model.value.trim()) throw new Error("Informe o Model ID do worker ou selecione o modelo padrão do endpoint.");
-      return { providerId: p.id, endpointId: endpoint.value.trim(), apiKey: key.value.trim(), selectedModel: useDefault.checked ? "" : model.value.trim(), useEndpointDefault: useDefault.checked };
+      return { providerId: p.id, endpointId: endpoint.value.trim(), apiKey: key.value.trim(), selectedModel: useDefault.checked ? "" : model.value.trim(), useEndpointDefault: useDefault.checked, runpodPayloadFormat: workerFormat.value };
     };
     let busy = false;
     const test = button("Testar conexão", async () => {
@@ -4163,6 +4168,7 @@
       field("API key", key, "Deixe em branco para manter a chave salva. Nunca cole uma chave na conversa."),
       el("label", { class: "runpod-default-model" }, useDefault, " Usar modelo padrão do endpoint"),
       field("Model ID", model, "Nome exato do modelo instalado no worker. Com o modelo padrão, o endpoint escolhe o modelo."),
+      field("Formato do worker", workerFormat, "Use Ollama nativo para o worker atual do RunPod. O formato OpenAI é mantido para workers legados."),
       status,
       el("div", { class: "form-actions" }, button("Cancel", () => d.close(), "quiet"), test, save),
     ]);

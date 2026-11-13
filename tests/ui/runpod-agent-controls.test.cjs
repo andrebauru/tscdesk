@@ -148,7 +148,8 @@ test("dynamic RunPod directory and editor use Endpoint ID and model, with only a
     const d = f.w.document.querySelector('dialog[aria-label="RunPod Serverless"]');
     assert.ok(d); assert.match(d.textContent, /queue-based.*cold start.*resposta.*completa.*streaming.*tools.*health.*inferência/s);
     assert.equal(d.querySelector('input[type="url"]'), null);
-    assert.equal(d.querySelector("select"), null);
+    const format = d.querySelector('[name="runpodPayloadFormat"]');
+    assert.ok(format); assert.equal(format.value, "runpod-ollama");
     assert.equal(d.querySelector('[name="endpointId"]').value, "endpoint-fixture");
     assert.equal(d.querySelector('[name="selectedModel"]').value, "qwen2.5-coder:7b");
     const key = d.querySelector('[name="apiKey"]');
@@ -168,7 +169,7 @@ test("RunPod blank-key save preserves the mask, accepts endpoint/model edits and
     await f.click("Save & use provider");
     const saved = providerCalls(f);
     assert.equal(saved.length, 1); assert.equal(saved[0].member, "saveProvider");
-    assert.deepEqual(saved[0].args[0], { providerId: "runpod-ollama", endpointId: "another-endpoint", apiKey: "", selectedModel: "qwen2.5-coder:14b", useEndpointDefault: false, setAsActive: true });
+    assert.deepEqual(saved[0].args[0], { providerId: "runpod-ollama", endpointId: "another-endpoint", apiKey: "", selectedModel: "qwen2.5-coder:14b", useEndpointDefault: false, runpodPayloadFormat: "runpod-ollama", setAsActive: true });
     assert.equal(f.provider.apiKeyMasked, "••••fixture");
     await f.click("Configure");
     assert.equal(f.w.document.querySelector('[name="apiKey"]').value, "");
@@ -233,7 +234,7 @@ test("RunPod endpoint-default mode disables Model ID and saves it empty", async 
     assert.equal(saved.length, 1);
     assert.deepEqual(saved[0].args[0], {
       providerId: "runpod-ollama", endpointId: "endpoint-fixture", apiKey: "",
-      selectedModel: "", useEndpointDefault: true, setAsActive: true,
+      selectedModel: "", useEndpointDefault: true, runpodPayloadFormat: "runpod-ollama", setAsActive: true,
     });
   } finally { f.close(); }
 });

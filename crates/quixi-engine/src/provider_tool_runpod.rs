@@ -1,8 +1,6 @@
-//! RunPod queue adapter for SvenBrnn/runpod-worker-ollama (master, checked 2026-11-06).
-//! POST /v2/{endpoint}/run, GET /status/{job}, POST /cancel/{job}; no SSE or tools.
-//! utils.py forwards openai_route/openai_input; engine.py yields a completion object
-//! when stream=false; handler.py uses return_aggregate_stream=true (an output array).
-//! JSON-string completions are also accepted, but streaming deltas are not.
+//! RunPod queue adapter for the native runpod-workers/worker-ollama contract and
+//! the legacy SvenBrnn OpenAI envelope. POST /run, GET /status, POST /cancel;
+//! no SSE or tools. Native Ollama and legacy aggregated completions are accepted.
 //! The selected model is forwarded unchanged; provisioning/pulling it is the worker's
 //! responsibility. The upstream handler logs job input remotely; never log it here.
 //!
@@ -20,6 +18,8 @@ use std::time::{Duration, Instant};
 
 pub(super) const API_BASE: &str = "https://api.runpod.ai/v2";
 pub(super) const DEFAULT_MODEL: &str = "runpod/endpoint-default";
+pub(super) const FORMAT_OLLAMA: &str = "runpod-ollama";
+pub(super) const FORMAT_OPENAI: &str = "runpod-openai";
 const CANCELLED: &str = "RunPod request cancelled locally; no response or tools were applied.";
 const MAX_RESPONSE_BYTES: u64 = 8 * 1024 * 1024;
 
@@ -101,8 +101,8 @@ fn response_json(response: Response) -> Result<Value, String> {
     serde_json::from_slice(&bytes).map_err(|_| "RunPod returned invalid JSON.".into())
 }
 
-/// Monta o contrato OpenAI do worker, omitindo `model` quando o endpoint o define.
-fn payload(messages: &[Value], model: &str, use_endpoint_default: bool) -> Result<Value, String> {
+/// Monta o contrato selecionado do worker, omitindo `model` quando o endpoint o define.
+fn payload(messages: &[Value], model: &str, use_endpoint_default: bool, format: &str) -> Result<Value, String> {
     let mut wire = Vec::new();
     for message in messages {
         let role = message.get("role").and_then(Value::as_str).unwrap_or("");
@@ -119,14 +119,18 @@ fn payload(messages: &[Value], model: &str, use_endpoint_default: bool) -> Resul
         wire.push(json!({"role":role,"content":content}));
     }
     if wire.is_empty() { return Err("RunPod requires text messages.".into()); }
-    let mut openai_input = json!({"messages":wire,"stream":false});
+    let mut input = json!({"messages":wire,"stream":false});
     if !use_endpoint_default {
-        openai_input["model"] = json!(model);
+        input["model"] = json!(model);
     }
-    Ok(json!({"input":{
-        "openai_route":"/v1/chat/completions",
-        "openai_input":openai_input
-    }}))
+    match format {
+        FORMAT_OLLAMA => Ok(json!({"input":input})),
+        FORMAT_OPENAI => Ok(json!({"input":{
+            "openai_route":"/v1/chat/completions",
+            "openai_input":input
+        }})),
+        _ => Err("Select a supported RunPod worker format.".into()),
+    }
 }
 
 fn parse_output(output: &Value, model: &str) -> Result<ProviderToolTurn, String> {
@@ -142,6 +146,29 @@ fn parse_output(output: &Value, model: &str) -> Result<ProviderToolTurn, String>
             reasoning_details: None, tool_calls: Vec::new(), provider_name: "RunPod Serverless".into(),
             model_id: model.into(), requested_model: model.into(), effective_model: None,
             cost_usd: None, attempts: 1, stream_error: None, usage: None,
+        });
+    }
+    // O worker Ollama atual retorna o objeto nativo, sem envelope OpenAI.
+    let ollama = output.as_array().filter(|items| items.len() == 1)
+        .map(|items| &items[0]).unwrap_or(output);
+    if let Some(text) = ollama.get("message").and_then(|message| message.get("content"))
+        .and_then(Value::as_str).filter(|text| !text.trim().is_empty())
+    {
+        if ollama.get("done").and_then(Value::as_bool) != Some(true) {
+            return Err("RunPod Ollama worker returned an incomplete response.".into());
+        }
+        return Ok(ProviderToolTurn {
+            response_items: Vec::new(), text: text.into(), thinking: String::new(),
+            reasoning_details: None, tool_calls: Vec::new(), provider_name: "RunPod Serverless".into(),
+            model_id: model.into(), requested_model: model.into(),
+            effective_model: ollama.get("model").and_then(Value::as_str).map(str::to_string),
+            cost_usd: None, attempts: 1, stream_error: None,
+            usage: Some(ProviderTokenUsage {
+                input_tokens: ollama.get("prompt_eval_count").and_then(Value::as_u64).unwrap_or(0),
+                output_tokens: ollama.get("eval_count").and_then(Value::as_u64).unwrap_or(0),
+                cache_read_tokens: 0,
+                ..ProviderTokenUsage::default()
+            }),
         });
     }
     let items = output.as_array().filter(|a| a.len() == 1)
@@ -238,12 +265,12 @@ fn wait(request: &AiRequest, deadline: Instant, delay: Duration) -> Result<(), S
 
 fn infer<F: FnMut(StreamChunk)>(
     control: &AgentControl, transport: &Transport, endpoint: &str, key: &str,
-    messages: &[Value], model: &str, use_endpoint_default: bool, on_chunk: &mut F,
+    messages: &[Value], model: &str, use_endpoint_default: bool, format: &str, on_chunk: &mut F,
 ) -> Result<ProviderToolTurn, String> {
     // Register before /run. start_request returns a local rejection when paused.
     let request = control.start_request().map_err(|_| CANCELLED.to_string())?;
     validate_config(endpoint, key, model, use_endpoint_default)?;
-    let body = payload(messages, model, use_endpoint_default)?;
+    let body = payload(messages, model, use_endpoint_default, format)?;
     let http = transport.client()?;
     let deadline = Instant::now() + transport.timeout;
     stopped(&request)?;
@@ -323,9 +350,9 @@ fn infer<F: FnMut(StreamChunk)>(
 
 pub(super) fn complete_runpod_tool_turn<F: FnMut(StreamChunk)>(
     control: &AgentControl, messages: &[Value], model: &str, key: &str,
-    endpoint: &str, use_endpoint_default: bool, on_chunk: &mut F,
+    endpoint: &str, use_endpoint_default: bool, format: &str, on_chunk: &mut F,
 ) -> Result<ProviderToolTurn, String> {
-    infer(control, &Transport::production(), endpoint, key, messages, model, use_endpoint_default, on_chunk)
+    infer(control, &Transport::production(), endpoint, key, messages, model, use_endpoint_default, format, on_chunk)
 }
 
 fn health(control: &AgentControl, transport: &Transport, endpoint: &str, key: &str) -> Result<(), String> {
@@ -451,7 +478,7 @@ mod tests {
         (Arc::new(AgentControl::new(root.path())), root)
     }
     fn run(control: &AgentControl, transport: &Transport, chunks: &mut Vec<StreamChunk>) -> Result<ProviderToolTurn, String> {
-        infer(control, transport, ENDPOINT, KEY, &messages(), MODEL, false, &mut |c| chunks.push(c))
+        infer(control, transport, ENDPOINT, KEY, &messages(), MODEL, false, FORMAT_OLLAMA, &mut |c| chunks.push(c))
     }
 
     #[test]
@@ -472,8 +499,7 @@ mod tests {
         assert_eq!(chunks.len(), 1);
         let requests = requests.lock().unwrap();
         assert_eq!(requests.len(), 3);
-        assert_eq!(requests[0].1, json!({"input":{"openai_route":"/v1/chat/completions",
-            "openai_input":{"model":MODEL,"messages":messages(),"stream":false}}}));
+        assert_eq!(requests[0].1, json!({"input":{"model":MODEL,"messages":messages(),"stream":false}}));
         assert!(!requests[0].1.to_string().contains("tools"));
     }
 
@@ -488,15 +514,30 @@ mod tests {
         let mut chunks = Vec::new();
         let turn = infer(
             &control, &Transport::loopback(address, Duration::from_secs(2)), ENDPOINT, KEY,
-            &messages(), "", true, &mut |chunk| chunks.push(chunk),
+            &messages(), "", true, FORMAT_OLLAMA, &mut |chunk| chunks.push(chunk),
         ).unwrap();
         server.join().unwrap();
         assert_eq!(turn.text, resposta);
         assert_eq!(chunks.len(), 1);
         assert!(matches!(&chunks[0], StreamChunk::Text(texto) if texto == resposta));
         let body = &requests.lock().unwrap()[0].1;
-        assert!(body["input"]["openai_input"].get("model").is_none());
-        assert_eq!(body["input"]["openai_input"]["messages"], json!(messages()));
+        assert!(body["input"].get("model").is_none());
+        assert_eq!(body["input"]["messages"], json!(messages()));
+    }
+
+    #[test]
+    fn ollama_native_response_and_legacy_openai_payload_are_supported() {
+        let native = json!({"model":"configured-model","message":{"role":"assistant","content":"native answer"},
+            "done":true,"prompt_eval_count":9,"eval_count":4});
+        let turn = parse_output(&native, DEFAULT_MODEL).unwrap();
+        assert_eq!(turn.text, "native answer");
+        assert_eq!(turn.effective_model.as_deref(), Some("configured-model"));
+        let usage = turn.usage.unwrap();
+        assert_eq!((usage.input_tokens, usage.output_tokens), (9, 4));
+
+        let legacy = payload(&messages(), MODEL, false, FORMAT_OPENAI).unwrap();
+        assert_eq!(legacy, json!({"input":{"openai_route":"/v1/chat/completions",
+            "openai_input":{"model":MODEL,"messages":messages(),"stream":false}}}));
     }
 
     #[test]
@@ -712,7 +753,7 @@ mod tests {
             json!({"role":"function","content":"result"}),
             json!({"role":"user","content":[{"type":"image_url","image_url":{"url":"data:image/png;base64,AA"}}]}),
             json!({"role":"assistant","content":"reply","_responses_output":[{"type":"function_call_output"}]})]
-        { assert!(payload(&[message], MODEL, false).is_err()); }
+        { assert!(payload(&[message], MODEL, false, FORMAT_OLLAMA).is_err()); }
     }
 
     #[test]

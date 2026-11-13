@@ -319,7 +319,7 @@ impl ProviderManager {
                 supports_oauth: false,
                 oauth_label: None,
                 auth_mode: "api_key".to_string(),
-                api_format: "runpod".to_string(),
+                api_format: provider_tool_runpod::FORMAT_OLLAMA.to_string(),
                 base_url: "https://api.runpod.ai/v2".to_string(),
                 api_key_masked: String::new(),
                 api_key_raw: String::new(),
@@ -329,7 +329,7 @@ impl ProviderManager {
                 oauth_expires_ms: None,
                 key_placeholder: "runpod_<api_key>".to_string(),
                 env_var: "RUNPOD_API_KEY".to_string(),
-                docs_url: "https://github.com/SvenBrnn/runpod-worker-ollama".to_string(),
+                docs_url: "https://github.com/runpod-workers/worker-ollama".to_string(),
                 configured: false,
                 selected_model: String::new(),
                 models: vec![],
@@ -1158,7 +1158,9 @@ impl ProviderManager {
         if let Some(entry) = catalog.providers.iter_mut().find(|p| p.id == "runpod-ollama") {
             // Ignore historical editable URLs, formats, masks and stale configured flags.
             entry.base_url = provider_tool_runpod::API_BASE.to_string();
-            entry.api_format = "runpod".to_string();
+            if entry.api_format != provider_tool_runpod::FORMAT_OPENAI {
+                entry.api_format = provider_tool_runpod::FORMAT_OLLAMA.to_string();
+            }
             entry.auth_mode = "api_key".to_string();
             entry.api_key_masked = if entry.api_key_raw.is_empty() { String::new() } else { "••••••••".to_string() };
             let usa_modelo_padrao = entry.selected_model == provider_tool_runpod::DEFAULT_MODEL;
@@ -1612,6 +1614,11 @@ impl ProviderManager {
         };
         let usa_modelo_padrao = body.get("useEndpointDefault").and_then(Value::as_bool)
             .unwrap_or(entry.selected_model == provider_tool_runpod::DEFAULT_MODEL);
+        let formato = body.get("runpodPayloadFormat").and_then(Value::as_str)
+            .unwrap_or(&entry.api_format);
+        if !matches!(formato, provider_tool_runpod::FORMAT_OLLAMA | provider_tool_runpod::FORMAT_OPENAI) {
+            return json!({"error":"Select a supported RunPod worker format."});
+        }
         let key = match body.get("apiKey") {
             Some(value) if value.as_str() == Some("") && !entry.api_key_raw.is_empty() => &entry.api_key_raw,
             Some(value) if value.as_str() == Some(entry.api_key_masked.as_str()) && !entry.api_key_raw.is_empty() => &entry.api_key_raw,
@@ -1632,7 +1639,7 @@ impl ProviderManager {
         entry.api_key_raw = key;
         entry.api_key_masked = "••••••••".to_string();
         entry.base_url = provider_tool_runpod::API_BASE.to_string();
-        entry.api_format = "runpod".to_string();
+        entry.api_format = formato.to_string();
         entry.auth_mode = "api_key".to_string();
         entry.configured = true;
         entry.last_tested_ok = None;
@@ -3307,7 +3314,7 @@ impl ProviderManager {
             }
             let reply = match provider_tool_runpod::complete_runpod_tool_turn(
                 &self.ai_control, &messages, &model_id, &credential, &endpoint_id,
-                model_id == provider_tool_runpod::DEFAULT_MODEL, &mut on_chunk
+                model_id == provider_tool_runpod::DEFAULT_MODEL, &api_format, &mut on_chunk
             ) {
                 Ok(turn) => turn.text,
                 Err(error) => error,
@@ -3892,7 +3899,7 @@ impl ProviderManager {
         if provider_id == "runpod-ollama" {
             return match provider_tool_runpod::complete_runpod_tool_turn(
                 &self.ai_control, original_messages, &model_id, &credential, &endpoint_id,
-                model_id == provider_tool_runpod::DEFAULT_MODEL, &mut on_chunk
+                model_id == provider_tool_runpod::DEFAULT_MODEL, &api_format, &mut on_chunk
             ) {
                 Ok(turn) => Some(turn),
                 Err(error) => Some(tool_failure(error, &provider_name, &model_id)),
@@ -4665,7 +4672,7 @@ mod runpod_configuration_tests {
         assert_eq!(entry.api_key_raw, SECRET);
         assert_eq!(entry.api_key_masked, "••••••••");
         assert_eq!(entry.base_url, provider_tool_runpod::API_BASE);
-        assert_eq!(entry.api_format, "runpod");
+        assert_eq!(entry.api_format, provider_tool_runpod::FORMAT_OLLAMA);
         assert_eq!(entry.name, "RunPod Serverless");
         assert!(!format!("{entry:?}").contains(SECRET));
         let disk = fs::read_to_string(&path).unwrap();
@@ -4773,7 +4780,7 @@ mod runpod_configuration_tests {
         let entry = merged.providers.iter().find(|p|p.id=="runpod-ollama").unwrap();
         assert!(!entry.configured); assert!(entry.endpoint_id.is_empty());
         assert_eq!(entry.base_url, provider_tool_runpod::API_BASE);
-        assert_eq!(entry.api_format, "runpod");
+        assert_eq!(entry.api_format, provider_tool_runpod::FORMAT_OLLAMA);
         assert!(!ProviderManager::supports_subagent_tools(entry));
         // endpointId is optional for old serialized entries, required only for RunPod admission.
         let mut serialized = serde_json::to_value(entry).unwrap();
