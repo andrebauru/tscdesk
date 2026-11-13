@@ -6,7 +6,7 @@
       const {state,el,button,ib,icon,field,select,dialog,formDialog,toast,rpc,api,copy,navigate,header,empty,date} = c;
       const checked = value => { if(value?.error)throw Error(value.error); if(value===false||value===null)throw Error("The change could not be saved. Please retry."); return value; };
       const textMatch = (item, query, fields) => fields.some(k => String(item[k]||"").toLocaleLowerCase().includes(query));
-      function startProject(p) { c.saveDraft(); state.project=p.id;state.folder=p.folders?.[0]?.path||"";navigate("new"); }
+      function startProject(p) { c.saveDraft(); state.project=p.id;state.folder="";state.taskFolders=[];navigate("new"); }
       function projectPage(host) {
         const p=state.projects.find(p=>p.id===state.id);
         if(!p){host.replaceChildren(empty("Project unavailable","Return to Projects and choose a project.",button("Projects",()=>navigate("projects"))));return;}

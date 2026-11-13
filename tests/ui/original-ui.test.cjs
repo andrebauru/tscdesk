@@ -659,21 +659,40 @@ test("streaming updates do not replace a follow-up being typed", async () => {
   }
 });
 
-test("choosing a project passes its context into the new task", async () => {
+test("a project task receives only the folders explicitly selected for it", async () => {
   const f = await fixture();
   try {
     await f.click("Projects");
     await wait();
     await f.click("Open project");
     await f.click("Start task");
+    await f.click("Choose folder");
+    await f.click("Add /project-a");
+    await f.click("Use selected folders");
     f.type("#prompt", "Project scoped work");
     await f.click("Send");
     const start = f.calls.find((c) => c.member === "start");
     assert.equal(start.args[0].spaceId, "project-a");
     assert.equal(start.args[0].cwd, "/project-a");
+    assert.deepEqual(Array.from(start.args[0].userSelectedFolders), ["/project-a"]);
   } finally {
     f.close();
   }
+});
+
+test("one task can explicitly select multiple project folders without granting others", async () => {
+  const f = await fixture();
+  try {
+    f.projects[0].folders.push({path:"/project-a/docs"}, {path:"/project-a/private"});
+    await f.click("Projects"); await f.click("Open project"); await f.click("Start task");
+    await f.click("Choose folder");
+    await f.click("Add /project-a"); await f.click("Add /project-a/docs");
+    await f.click("Use selected folders");
+    f.type("#prompt", "Work in selected roots"); await f.click("Send");
+    const start = f.calls.find(c => c.member === "start");
+    assert.deepEqual(Array.from(start.args[0].userSelectedFolders), ["/project-a", "/project-a/docs"]);
+    assert.equal(start.args[0].userSelectedFolders.includes("/project-a/private"), false);
+  } finally { f.close(); }
 });
 
 test("adding a project folder opens the native picker and cancellation changes nothing", async () => {
@@ -739,7 +758,7 @@ test("opening a search result restores that conversation's workspace", async () 
     result.click();
     await wait();
     await f.click("workspace");
-    assert.equal(f.w.document.querySelector('[aria-label="Workspace folder path"]').value, "/workspace");
+    assert.match(f.w.document.querySelector("dialog").textContent, /\/workspace/);
   } finally { f.close(); }
 });
 

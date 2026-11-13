@@ -25,6 +25,7 @@
     draft: "",
     attachments: [],
     folder: "",
+    taskFolders: [],
     project: null,
     permission: "default",
     pythonSettings: { installer: "pip", useVenv: true },
@@ -213,9 +214,13 @@
     );
   }
   function currentFolder() {
-    return (
-      session() ? (session().userSelectedFolders?.[0] ?? session().cwd ?? "") : (state.folder || "")
-    );
+    return currentFolders()[0] || "";
+  }
+  // Retorna somente as pastas explicitamente autorizadas para a task atual.
+  function currentFolders() {
+    const s = session();
+    if (s) return Array.from(new Set(s.userSelectedFolders?.length ? s.userSelectedFolders : (s.cwd ? [s.cwd] : [])));
+    return Array.from(new Set(state.taskFolders?.length ? state.taskFolders : (state.folder ? [state.folder] : [])));
   }
   function dialog(title, body, { wide = false } = {}) {
     const opener = document.activeElement;
@@ -612,11 +617,12 @@
     if (page !== "tools") clearTimeout(toolsPollTimer);
     state.page = page;
     state.id = id;
-    if (page === "project") { state.project=id; state.folder=state.projects.find(p=>p.id===id)?.folders?.[0]?.path||""; }
+    if (page === "project") { state.project=id; state.folder=""; state.taskFolders=[]; }
     if (page === "chat") {
       const opened = session();
       state.project = opened?.spaceId || null;
       state.folder = opened?.userSelectedFolders?.[0] ?? opened?.cwd ?? "";
+      state.taskFolders = opened?.userSelectedFolders?.slice() ?? (opened?.cwd ? [opened.cwd] : []);
     }
     state.attachments = state.attachmentDrafts.get(draftKey())?.slice() || [];
     const path =
@@ -685,6 +691,7 @@
           () => {
             state.project = null;
             state.folder = "";
+            state.taskFolders = [];
             navigate("new");
           },
           "new-task",
@@ -805,6 +812,7 @@
                 () => {
                   state.project = s.spaceId || null;
                   state.folder = s.cwd || "";
+                  state.taskFolders = s.userSelectedFolders?.slice() ?? (s.cwd ? [s.cwd] : []);
                   navigate("chat", s.sessionId);
                 },
                 "session-link",
@@ -1287,55 +1295,66 @@
   }
   async function folderDialog() {
     const anchor=document.querySelector(".workspace-switch")?.getBoundingClientRect();
-    const current = currentFolder();
+    const selected = new Set(currentFolders());
     const input = el("input", {
-      value: current,
+      value: "",
       placeholder: "e.g. ~/Projects/my-project",
       "aria-label": "Workspace folder path",
     });
     const error = el("div", { class: "form-error", role: "alert" });
+    const list = el("div", { class: "workspace-folder-list" });
+    const renderSelected = () => list.replaceChildren(...Array.from(selected).map(path =>
+      el("div", { class: "row" }, el("span", { class: "path grow" }, path),
+        button("Remove", () => { selected.delete(path); renderSelected(); }, "quiet"))));
+    const addPath = async raw => {
+      const checked = await api("/api/quixi/workspace/inspect", { path: String(raw || "").trim() });
+      if (!checked.exists) throw new Error("Choose an existing folder.");
+      selected.add(checked.path); input.value = ""; renderSelected();
+    };
     const browse = button("Choose folder", async () => {
       const folder = await rpc(
         "LocalAgentModeSessions",
         "browseAndAddTrustedFolder",
         ["Choose a workspace folder"],
       );
-      if (folder) input.value = folder;
+      if (folder) await addPath(folder);
       else toast("No folder selected. You can also enter a path below.");
     });
+    const projectChoices = (project()?.folders || []).filter(folder => !selected.has(folder.path)).map(folder =>
+      button(`Add ${folder.path}`, () => addPath(folder.path).catch(e => { error.textContent=e.message; }), "quiet"));
     const d = dialog("Choose workspace", [
       el(
         "p",
         {},
-        "Tasks can inspect this folder. In Manual mode, TsCIDE asks before changing files or running commands.",
+        "Select one or more folders for this task. Other project folders remain inaccessible until explicitly added.",
       ),
+      list,
+      ...projectChoices,
       browse,
-      current ? button("Use without a folder",async()=>{
-        const s=session();if(s){const result=await rpc(service(s),"updateSession",[s.sessionId,{userSelectedFolders:[],cwd:"",spaceId:state.project}]);if(result?.error)throw new Error(result.error);await loadSessions();}state.folder="";d.close();renderPage();
+      selected.size ? button("Use without a folder",async()=>{
+        const s=session();if(s){const result=await rpc(service(s),"updateSession",[s.sessionId,{userSelectedFolders:[],cwd:"",spaceId:state.project}]);if(result?.error)throw new Error(result.error);await loadSessions();}state.folder="";state.taskFolders=[];d.close();renderPage();
       },"quiet") : null,
       field("Or enter a folder path", input),
+      button("Add typed folder", () => addPath(input.value).catch(e => { error.textContent=e.message; }), "quiet"),
       error,
       el(
         "div",
         { class: "form-actions" },
         button("Cancel", () => d.close(), "quiet"),
         button(
-          "Use folder",
+          "Use selected folders",
           async () => {
             try {
-              const path = input.value.trim();
-              const checked = await api("/api/quixi/workspace/inspect", {
-                path,
-              });
-              if (!checked.exists)
-                throw new Error("Choose an existing folder.");
-              state.folder = checked.path;
+              if (input.value.trim()) await addPath(input.value);
+              state.taskFolders = Array.from(selected);
+              state.folder = state.taskFolders[0] || "";
               const s = session();
               if (s) {
                 await rpc(service(s), "updateSession", [
                   s.sessionId,
                   {
-                    userSelectedFolders: [state.folder],
+                    userSelectedFolders: state.taskFolders,
+                    cwd: state.folder,
                     spaceId: state.project,
                   },
                 ]);
@@ -1351,6 +1370,7 @@
         ),
       ),
     ]);
+    renderSelected();
     positionPopover(d,anchor);
   }
   const pendingSubmissions=new Set();
@@ -1482,7 +1502,7 @@
           title: Array.from(text || attached[0]?.name || "New task").slice(0, 80).join(""),
           permissionMode: state.permission,
           spaceId: state.project,
-          userSelectedFolders: currentFolder() ? [currentFolder()] : [],
+          userSelectedFolders: currentFolders(),
           cwd: currentFolder() || "",
         };
         s = await rpc("LocalAgentModeSessions", "start", [opts]);
@@ -5385,6 +5405,7 @@
       agentPolling = true;
       scheduleAgentPoll();
       state.folder = ""; // A new conversation has no implicit access to the source checkout.
+      state.taskFolders = [];
       const path = decodeURIComponent(location.pathname.slice(1));
       navigate(path || "new", null, { replace: true });
       pollMcpInteractions();
@@ -5414,7 +5435,7 @@
       e.preventDefault(); stepConversationFind(e.shiftKey ? -1 : 1);
     } else if (command && e.key.toLowerCase() === "n") {
       e.preventDefault();
-      saveDraft();state.project=null;state.folder="";navigate("new");
+      saveDraft();state.project=null;state.folder="";state.taskFolders=[];navigate("new");
     } else if (command && e.key.toLowerCase() === "k") {
       e.preventDefault();
       navigate("search");

@@ -23,13 +23,14 @@ fn canonical_or_parent(path: &Path) -> Option<PathBuf> {
 // Resolve existing symlinks and normalize missing descendants before checking scope.
 #[cfg(test)]
 fn file_access_outside_workspace(name:&str,input:&Value,cwd:&str)->bool {
-    file_access_outside_workspace_with_spill(name, input, cwd, None)
+    file_access_outside_workspace_with_spill(name, input, cwd, &[cwd.to_string()], None)
 }
 
 fn file_access_outside_workspace_with_spill(
     name: &str,
     input: &Value,
     cwd: &str,
+    allowed_roots: &[String],
     spill_allowance: Option<(&Path, &str)>,
 ) -> bool {
     let check_one = |raw: &str, allow_spill: bool| -> bool {
@@ -46,10 +47,9 @@ fn file_access_outside_workspace_with_spill(
                 }
             }
         }
-        match (Path::new(cwd).canonicalize(), canonical_or_parent(&joined)) {
-            (Ok(root), Some(resolved)) => !resolved.starts_with(root),
-            _ => true,
-        }
+        let Some(resolved) = canonical_or_parent(&joined) else { return true; };
+        !allowed_roots.iter().filter_map(|root| Path::new(root).canonicalize().ok())
+            .any(|root| resolved.starts_with(root))
     };
 
     match name {
@@ -597,12 +597,24 @@ impl QuixiEngine {
                 Ok(identity)=>{if expected.is_some_and(|v|v!=identity){return ("MCP server configuration changed after the tool was advertised. Discover it again before requesting execution.".into(),true);}Some(identity)},Err(error)=>return(format!("MCP server is unavailable: {error}"),true),
             }
         }else{None};
+        // A task may access only its explicitly selected folders (plus its current
+        // worktree cwd). Human approval changes the operation, never this boundary.
+        let mut allowed_roots = self.agent_sessions.read().get(session_id)
+            .map(|session| session.user_selected_folders.clone())
+            .unwrap_or_default();
+        if !cwd.trim().is_empty() && !allowed_roots.iter().any(|root| root == cwd) {
+            allowed_roots.push(cwd.to_string());
+        }
         let outside = file_access_outside_workspace_with_spill(
             name,
             input,
             cwd,
+            &allowed_roots,
             Some((&self.data_dir, session_id)),
         );
+        if outside {
+            return ("Blocked: this path is outside the folders selected for this task. Add the folder to the task before accessing it.".into(), true);
+        }
         let needs=|mode:&str| agent_tools::requires_approval_with_host(name,input,mode,&self.mcp_host) || (outside&&!matches!(mode,"auto"|"bypassPermissions"));
         let mode=self.current_permission_mode(session_id,fallback_mode);
         let execute = |execution_mode: &str| -> (String, bool) {
@@ -630,7 +642,7 @@ impl QuixiEngine {
                     let policy = quixi_platform::sandbox::SandboxPolicy {
                         mode: quixi_platform::sandbox::SandboxMode::from_permission_mode(execution_mode),
                         workspace_root: PathBuf::from(cwd),
-                        additional_writable_roots: vec![],
+                        additional_writable_roots: allowed_roots.iter().skip(1).map(PathBuf::from).collect(),
                         session_temp_dir: None,
                     };
                     let _admission = self.ai_submission.lock();
@@ -936,5 +948,11 @@ mod tests {
  let root=std::env::temp_dir().join(format!("quixi-scope-{}",Uuid::new_v4()));fs::create_dir_all(root.join("work")).unwrap();fs::write(root.join("outside"),"private").unwrap();let cwd=root.join("work");let cwd=cwd.to_str().unwrap();
  assert!(file_access_outside_workspace("Read",&json!({"file_path":"../outside"}),cwd));assert!(!file_access_outside_workspace("Write",&json!({"file_path":"new/nested.txt"}),cwd));
  #[cfg(unix)]{std::os::unix::fs::symlink(root.join("outside"),root.join("work/link")).unwrap();assert!(file_access_outside_workspace("Read",&json!({"file_path":"link"}),cwd));}
+ fs::remove_dir_all(root).unwrap();}
+ #[test] fn explicitly_selected_secondary_folder_is_inside_task_scope(){
+ let root=std::env::temp_dir().join(format!("quixi-roots-{}",Uuid::new_v4()));let first=root.join("first");let second=root.join("second");let other=root.join("other");for dir in [&first,&second,&other]{fs::create_dir_all(dir).unwrap();}
+ let roots=vec![first.to_string_lossy().into_owned(),second.to_string_lossy().into_owned()];let cwd=roots[0].as_str();
+ assert!(!file_access_outside_workspace_with_spill("Read",&json!({"file_path":second.join("file.txt")}),cwd,&roots,None));
+ assert!(file_access_outside_workspace_with_spill("Read",&json!({"file_path":other.join("file.txt")}),cwd,&roots,None));
  fs::remove_dir_all(root).unwrap();}
 }
