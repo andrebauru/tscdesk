@@ -2358,3 +2358,8 @@ dialog:focus {
 .welcome-actions { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; margin-top: 14px; }
 .welcome-actions .hint { max-width: 420px; }
 .explorer-excludes { flex: 1 1 180px; min-width: 140px; min-height: 26px; padding: 2px 8px; font-size: 12px; border: 1px solid var(--line); border-radius: 6px; background: var(--panel); color: var(--text); }
+.activity-result-summary { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 8px; margin-top: 6px; padding: 6px 10px; border-top: 1px solid var(--line); font-size: 11.5px; color: var(--muted); }
+.activity-result-summary strong { font-size: 11px; letter-spacing: 0.05em; color: var(--text); }
+.tool-step.is-awaiting .tool-step-status { color: var(--accent); font-weight: 600; }
+.tool-step.is-cancelled .tool-step-status { color: var(--muted); text-decoration: line-through; }
+.tool-step.is-completed .tool-step-status { color: var(--ok, var(--accent)); }

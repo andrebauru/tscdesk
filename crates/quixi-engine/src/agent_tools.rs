@@ -17,9 +17,23 @@ pub const TOOL_LIST: &str = "ListDirectory";
 pub const TOOL_GREP: &str = "Grep";
 pub const TOOL_WRITE: &str = "Write";
 pub const TOOL_EDIT: &str = "Edit";
+pub const TOOL_CREATE_DIR: &str = "CreateDirectory";
+pub const TOOL_MOVE_FILE: &str = "MoveFile";
+pub const TOOL_DELETE_FILE: &str = "DeleteFile";
 pub const TOOL_WEB_FETCH: &str = "WebFetch";
 pub const TOOL_MCP_CALL: &str = "McpCall";
 pub const TOOL_MCP_DISCOVER: &str = "McpDiscover";
+
+pub const TOOL_LIST_DIRECTORY_SNAKE: &str = "list_directory";
+pub const TOOL_READ_FILE_SNAKE: &str = "read_file";
+pub const TOOL_WRITE_FILE_SNAKE: &str = "write_file";
+pub const TOOL_EDIT_FILE_SNAKE: &str = "edit_file";
+pub const TOOL_APPLY_PATCH_SNAKE: &str = "apply_patch";
+pub const TOOL_CREATE_DIRECTORY_SNAKE: &str = "create_directory";
+pub const TOOL_MOVE_FILE_SNAKE: &str = "move_file";
+pub const TOOL_DELETE_FILE_SNAKE: &str = "delete_file";
+pub const TOOL_RUN_COMMAND_SNAKE: &str = "run_command";
+pub const TOOL_SEARCH_FILES_SNAKE: &str = "search_files";
 
 /// OpenAI-style function schemas handed to the provider.
 pub fn tool_schemas() -> Value {
@@ -126,6 +140,230 @@ pub fn tool_schemas() -> Value {
         {
             "type": "function",
             "function": {
+                "name": TOOL_CREATE_DIR,
+                "description": "Create a directory (and any missing parent directories) inside the authorized workspace.",
+                "parameters": {
+                    "type": "object",
+                    "properties": {
+                        "path": { "type": "string", "description": "Directory path to create." },
+                        "file_path": { "type": "string", "description": "Alias for path." }
+                    },
+                    "required": [],
+                    "additionalProperties": false
+                }
+            }
+        },
+        {
+            "type": "function",
+            "function": {
+                "name": TOOL_MOVE_FILE,
+                "description": "Move or rename a file or directory within the authorized workspace.",
+                "parameters": {
+                    "type": "object",
+                    "properties": {
+                        "source": { "type": "string", "description": "Existing relative or absolute path inside the workspace." },
+                        "destination": { "type": "string", "description": "Target relative or absolute path inside the workspace." },
+                        "from": { "type": "string", "description": "Alias for source." },
+                        "to": { "type": "string", "description": "Alias for destination." }
+                    },
+                    "required": [],
+                    "additionalProperties": false
+                }
+            }
+        },
+        {
+            "type": "function",
+            "function": {
+                "name": TOOL_DELETE_FILE,
+                "description": "Delete a file inside the authorized workspace. Always requires explicit user authorization unless Auto mode is active.",
+                "parameters": {
+                    "type": "object",
+                    "properties": {
+                        "file_path": { "type": "string", "description": "File path to delete." },
+                        "path": { "type": "string", "description": "Alias for file_path." }
+                    },
+                    "required": [],
+                    "additionalProperties": false
+                }
+            }
+        },
+        {
+            "type": "function",
+            "function": {
+                "name": TOOL_LIST_DIRECTORY_SNAKE,
+                "description": "List files and directories inside a workspace folder.",
+                "parameters": {
+                    "type": "object",
+                    "properties": {
+                        "path": { "type": "string", "description": "Directory path relative to workspace (defaults to '.')." }
+                    },
+                    "required": [],
+                    "additionalProperties": false
+                }
+            }
+        },
+        {
+            "type": "function",
+            "function": {
+                "name": TOOL_READ_FILE_SNAKE,
+                "description": "Read the contents of a file in the authorized workspace.",
+                "parameters": {
+                    "type": "object",
+                    "properties": {
+                        "file_path": { "type": "string", "description": "Path to the file." },
+                        "path": { "type": "string", "description": "Alias for file_path." },
+                        "offset": { "type": "integer", "description": "1-based line to start at." },
+                        "limit": { "type": "integer", "description": "Maximum number of lines (default 400)." },
+                        "line_numbers": { "type": "boolean", "description": "Prefix each line with its 1-based line number." }
+                    },
+                    "required": [],
+                    "additionalProperties": false
+                }
+            }
+        },
+        {
+            "type": "function",
+            "function": {
+                "name": TOOL_WRITE_FILE_SNAKE,
+                "description": "Create or overwrite a file in the authorized workspace with the given content.",
+                "parameters": {
+                    "type": "object",
+                    "properties": {
+                        "file_path": { "type": "string", "description": "Path to the file to create or overwrite." },
+                        "path": { "type": "string", "description": "Alias for file_path." },
+                        "content": { "type": "string", "description": "Complete text content to write." }
+                    },
+                    "required": ["content"],
+                    "additionalProperties": false
+                }
+            }
+        },
+        {
+            "type": "function",
+            "function": {
+                "name": TOOL_EDIT_FILE_SNAKE,
+                "description": "Modify an existing file by replacing old_string with new_string.",
+                "parameters": {
+                    "type": "object",
+                    "properties": {
+                        "file_path": { "type": "string", "description": "Path to the file to edit." },
+                        "path": { "type": "string", "description": "Alias for file_path." },
+                        "old_string": { "type": "string", "description": "Exact existing text to replace." },
+                        "new_string": { "type": "string", "description": "Replacement text." },
+                        "replace_all": { "type": "boolean", "description": "Replace all occurrences (default false)." }
+                    },
+                    "required": ["old_string", "new_string"],
+                    "additionalProperties": false
+                }
+            }
+        },
+        {
+            "type": "function",
+            "function": {
+                "name": TOOL_APPLY_PATCH_SNAKE,
+                "description": "Atomically apply a structured multi-file or multi-hunk patch (`*** Begin Patch` or unified diff).",
+                "parameters": {
+                    "type": "object",
+                    "properties": {
+                        "patch": { "type": "string", "description": "Complete patch text." }
+                    },
+                    "required": ["patch"],
+                    "additionalProperties": false
+                }
+            }
+        },
+        {
+            "type": "function",
+            "function": {
+                "name": TOOL_CREATE_DIRECTORY_SNAKE,
+                "description": "Create a directory (and any parent directories) in the authorized workspace.",
+                "parameters": {
+                    "type": "object",
+                    "properties": {
+                        "path": { "type": "string", "description": "Directory path to create." },
+                        "file_path": { "type": "string", "description": "Alias for path." }
+                    },
+                    "required": [],
+                    "additionalProperties": false
+                }
+            }
+        },
+        {
+            "type": "function",
+            "function": {
+                "name": TOOL_MOVE_FILE_SNAKE,
+                "description": "Move or rename a file or directory within the authorized workspace.",
+                "parameters": {
+                    "type": "object",
+                    "properties": {
+                        "source": { "type": "string", "description": "Source path inside workspace." },
+                        "destination": { "type": "string", "description": "Destination path inside workspace." },
+                        "from": { "type": "string", "description": "Alias for source." },
+                        "to": { "type": "string", "description": "Alias for destination." }
+                    },
+                    "required": [],
+                    "additionalProperties": false
+                }
+            }
+        },
+        {
+            "type": "function",
+            "function": {
+                "name": TOOL_DELETE_FILE_SNAKE,
+                "description": "Delete a file in the authorized workspace with explicit user authorization.",
+                "parameters": {
+                    "type": "object",
+                    "properties": {
+                        "file_path": { "type": "string", "description": "Path to the file to delete." },
+                        "path": { "type": "string", "description": "Alias for file_path." }
+                    },
+                    "required": [],
+                    "additionalProperties": false
+                }
+            }
+        },
+        {
+            "type": "function",
+            "function": {
+                "name": TOOL_RUN_COMMAND_SNAKE,
+                "description": "Execute a shell command in the authorized workspace and return stdout, stderr and exit code.",
+                "parameters": {
+                    "type": "object",
+                    "properties": {
+                        "command": { "type": "string", "description": "The command to run." },
+                        "description": { "type": "string", "description": "Short description of the command." },
+                        "timeout_seconds": { "type": "integer", "description": "Timeout in seconds (default 120, max 3600)." },
+                        "run_in_background": { "type": "boolean", "description": "Run in background and return a job_id." }
+                    },
+                    "required": ["command"],
+                    "additionalProperties": false
+                }
+            }
+        },
+        {
+            "type": "function",
+            "function": {
+                "name": TOOL_SEARCH_FILES_SNAKE,
+                "description": "Search files and file contents in the authorized workspace by text/regex query or glob pattern.",
+                "parameters": {
+                    "type": "object",
+                    "properties": {
+                        "query": { "type": "string", "description": "Substring or regex to search inside files." },
+                        "pattern": { "type": "string", "description": "Glob pattern to match file names when searching files." },
+                        "path": { "type": "string", "description": "Optional directory or file path within workspace (defaults to '.')." },
+                        "case_sensitive": { "type": "boolean", "description": "Match case exactly (default false)." },
+                        "is_regex": { "type": "boolean", "description": "Interpret query as a regular expression (default false)." },
+                        "glob": { "type": "string", "description": "Optional glob filter on filenames." },
+                        "context_lines": { "type": "integer", "description": "Surrounding context lines (0-5)." }
+                    },
+                    "required": [],
+                    "additionalProperties": false
+                }
+            }
+        },
+        {
+            "type": "function",
+            "function": {
                 "name": TOOL_WEB_FETCH,
                 "description": "Open a URL in the in-app browser pane and return the page title, text and interactive DOM refs.",
                 "parameters": {
@@ -208,14 +446,33 @@ pub(crate) fn action_allowed(name: &str, mode: &str) -> bool {
         || (matches!(mode, "acceptEdits" | "smartAuto")
             && matches!(
                 name,
-                TOOL_WRITE | TOOL_EDIT | crate::code_tools::TOOL_APPLY_PATCH
+                TOOL_WRITE
+                    | TOOL_WRITE_FILE_SNAKE
+                    | TOOL_EDIT
+                    | TOOL_EDIT_FILE_SNAKE
+                    | crate::code_tools::TOOL_APPLY_PATCH
+                    | TOOL_APPLY_PATCH_SNAKE
+                    | TOOL_CREATE_DIR
+                    | TOOL_CREATE_DIRECTORY_SNAKE
+                    | TOOL_MOVE_FILE
+                    | TOOL_MOVE_FILE_SNAKE
             ))
         || !matches!(
             name,
             TOOL_BASH
+                | TOOL_RUN_COMMAND_SNAKE
                 | TOOL_WRITE
+                | TOOL_WRITE_FILE_SNAKE
                 | TOOL_EDIT
+                | TOOL_EDIT_FILE_SNAKE
                 | crate::code_tools::TOOL_APPLY_PATCH
+                | TOOL_APPLY_PATCH_SNAKE
+                | TOOL_CREATE_DIR
+                | TOOL_CREATE_DIRECTORY_SNAKE
+                | TOOL_MOVE_FILE
+                | TOOL_MOVE_FILE_SNAKE
+                | TOOL_DELETE_FILE
+                | TOOL_DELETE_FILE_SNAKE
                 | crate::code_tools::TOOL_CREATE_WORKTREE
                 | "TerminalOpen"
                 | "TerminalSend"
@@ -240,10 +497,21 @@ pub fn available_tool_schemas_with_options(_mode: &str, team_enabled: bool) -> V
     Value::Array(base)
 }
 
-pub fn requires_approval(name: &str, _input: &Value, mode: &str) -> bool {
+pub fn requires_approval(name: &str, input: &Value, mode: &str) -> bool {
+    // File deletions inside ApplyPatch / apply_patch also require explicit approval unless Auto mode is active.
+    if matches!(name, crate::code_tools::TOOL_APPLY_PATCH | TOOL_APPLY_PATCH_SNAKE)
+        && !matches!(mode, "auto" | "bypassPermissions" | "smartAutoApproved")
+        && input
+            .get("patch")
+            .and_then(Value::as_str)
+            .is_some_and(|p| p.contains("*** Delete File:") || p.contains("+++ /dev/null"))
+    {
+        return true;
+    }
     // Without a verified host identity, tool names are insufficient to grant
     // trust: an external server can advertise a tool named `read_file`.
-    !action_allowed(name,mode) || (name==TOOL_MCP_CALL && !matches!(mode,"auto"|"bypassPermissions"))
+    !action_allowed(name, mode)
+        || (name == TOOL_MCP_CALL && !matches!(mode, "auto" | "bypassPermissions"))
 }
 
 pub fn requires_approval_with_host(name: &str, input: &Value, mode: &str, host: &McpHost) -> bool {
@@ -490,10 +758,13 @@ pub(crate) fn validate_provider_input(name: &str, input: &Value) -> Result<(), S
 pub fn validate_input(name: &str, input: &Value) -> Result<(), String> {
     let schemas = available_tool_schemas_with_options("auto", true);
     let task_schema = crate::subagents::schema();
-    let schema = schemas.as_array().unwrap().iter()
+    let schema = schemas
+        .as_array()
+        .unwrap()
+        .iter()
         .chain(std::iter::once(&task_schema))
         .find(|s| s["function"]["name"] == name)
-        .ok_or_else(|| format!("Unknown tool `{name}`."))?;
+        .ok_or_else(|| format!("ERRO: FERRAMENTA INDISPONÍVEL: Unknown tool `{name}`."))?;
     let object = input.as_object().ok_or("Tool arguments must be an object.")?;
     let params = &schema["function"]["parameters"];
     // A tool may legitimately declare no required arguments (ListSkills takes an optional filter),
@@ -519,7 +790,39 @@ pub fn validate_input(name: &str, input: &Value) -> Result<(), String> {
             Some("boolean") => value.is_boolean(),
             _ => true,
         };
-        if !valid { return Err(format!("Invalid argument `{key}`.")); }
+        if !valid {
+            return Err(format!("Invalid argument `{key}`."));
+        }
+    }
+    let has_nonempty_str = |k: &str| object.get(k).and_then(Value::as_str).is_some_and(|s| !s.trim().is_empty());
+    match name {
+        TOOL_READ_FILE_SNAKE
+        | TOOL_WRITE_FILE_SNAKE
+        | TOOL_EDIT_FILE_SNAKE
+        | TOOL_DELETE_FILE
+        | TOOL_DELETE_FILE_SNAKE => {
+            if !has_nonempty_str("file_path") && !has_nonempty_str("path") {
+                return Err("Missing required argument `file_path` (or `path`).".into());
+            }
+        }
+        TOOL_CREATE_DIR | TOOL_CREATE_DIRECTORY_SNAKE => {
+            if !has_nonempty_str("path") && !has_nonempty_str("file_path") {
+                return Err("Missing required argument `path`.".into());
+            }
+        }
+        TOOL_MOVE_FILE | TOOL_MOVE_FILE_SNAKE => {
+            let has_src = has_nonempty_str("source") || has_nonempty_str("from");
+            let has_dst = has_nonempty_str("destination") || has_nonempty_str("to");
+            if !has_src || !has_dst {
+                return Err("Both `source` and `destination` must be nonempty strings.".into());
+            }
+        }
+        TOOL_SEARCH_FILES_SNAKE => {
+            if !has_nonempty_str("query") && !has_nonempty_str("pattern") && !has_nonempty_str("glob") {
+                return Err("Provide a nonempty `query` or `pattern`/`glob` for search_files.".into());
+            }
+        }
+        _ => {}
     }
     if name == TOOL_MCP_CALL {
         let tool = input["tool"].as_str().unwrap_or_default();
@@ -537,8 +840,11 @@ pub fn repeatable_observation(name: &str, input: &Value) -> bool {
     matches!(
         name,
         TOOL_READ
+            | TOOL_READ_FILE_SNAKE
             | TOOL_LIST
+            | TOOL_LIST_DIRECTORY_SNAKE
             | TOOL_GREP
+            | TOOL_SEARCH_FILES_SNAKE
             | crate::code_tools::TOOL_GLOB
             | crate::code_tools::TOOL_LSP
             | "JobList"
@@ -564,7 +870,18 @@ impl ToolResults {
     pub fn is_file_mutation(name: &str) -> bool {
         matches!(
             name,
-            TOOL_WRITE | TOOL_EDIT | crate::code_tools::TOOL_APPLY_PATCH
+            TOOL_WRITE
+                | TOOL_WRITE_FILE_SNAKE
+                | TOOL_EDIT
+                | TOOL_EDIT_FILE_SNAKE
+                | crate::code_tools::TOOL_APPLY_PATCH
+                | TOOL_APPLY_PATCH_SNAKE
+                | TOOL_CREATE_DIR
+                | TOOL_CREATE_DIRECTORY_SNAKE
+                | TOOL_MOVE_FILE
+                | TOOL_MOVE_FILE_SNAKE
+                | TOOL_DELETE_FILE
+                | TOOL_DELETE_FILE_SNAKE
         )
     }
     pub fn changes_workspace(name: &str, output: &str, is_error: bool) -> bool {
@@ -660,10 +977,10 @@ pub(crate) fn execute_cancellable_with_mcp_identity(name:&str,input:&Value,cwd:&
     );
 
     if !action_allowed(name, permission_mode) {
-        return (format!("Approval required for {name}. Use ListDirectory and Read to inspect the selected workspace without approval. Auto allows shell commands and browsing; Allow file edits also permits Write and Edit."), true);
+        return (format!("OPERAÇÃO NÃO AUTORIZADA: Approval required for {name}. Use ListDirectory and Read to inspect the selected workspace without approval. Auto allows shell commands and browsing; Allow file edits also permits Write and Edit."), true);
     }
     match name {
-        TOOL_BASH => {
+        TOOL_BASH | TOOL_RUN_COMMAND_SNAKE => {
             let command = input.get("command").and_then(|v| v.as_str()).unwrap_or("");
             if command.trim().is_empty() {
                 return ("No command provided.".to_string(), true);
@@ -671,7 +988,7 @@ pub(crate) fn execute_cancellable_with_mcp_identity(name:&str,input:&Value,cwd:&
             if looks_destructive(command) && !auto_ok {
                 return (
                     format!(
-                        "Blocked by QuixiDesk permission mode '{permission_mode}': this command looks destructive. \
+                        "OPERAÇÃO NÃO AUTORIZADA: Blocked by QuixiDesk permission mode '{permission_mode}': this command looks destructive. \
                          Switch the session pill from Manual to Auto if that is really intended."
                     ),
                     true,
@@ -710,13 +1027,21 @@ pub(crate) fn execute_cancellable_with_mcp_identity(name:&str,input:&Value,cwd:&
                 Err(err) => (format!("Failed to run command: {err}"), true),
             }
         }
-        TOOL_LIST => {
+        TOOL_LIST | TOOL_LIST_DIRECTORY_SNAKE => {
             let raw = input.get("path").and_then(Value::as_str).unwrap_or(".");
             list_directory(&resolve_path(raw, cwd))
         }
-        TOOL_GREP => {
+        TOOL_GREP | TOOL_SEARCH_FILES_SNAKE => {
             let query = input.get("query").and_then(Value::as_str).unwrap_or("");
             let raw = input.get("path").and_then(Value::as_str).unwrap_or(".");
+            if query.trim().is_empty() {
+                let pattern = input
+                    .get("pattern")
+                    .or_else(|| input.get("glob"))
+                    .and_then(Value::as_str)
+                    .unwrap_or("");
+                return crate::code_tools::execute_glob(&resolve_path(raw, cwd), Path::new(cwd), pattern);
+            }
             let case_sensitive = input
                 .get("case_sensitive")
                 .and_then(Value::as_bool)
@@ -725,7 +1050,10 @@ pub(crate) fn execute_cancellable_with_mcp_identity(name:&str,input:&Value,cwd:&
                 .get("is_regex")
                 .and_then(Value::as_bool)
                 .unwrap_or(false);
-            let file_glob = input.get("glob").and_then(Value::as_str);
+            let file_glob = input
+                .get("glob")
+                .or_else(|| input.get("pattern"))
+                .and_then(Value::as_str);
             let context_lines = input
                 .get("context_lines")
                 .and_then(Value::as_u64)
@@ -752,7 +1080,7 @@ pub(crate) fn execute_cancellable_with_mcp_identity(name:&str,input:&Value,cwd:&
             let ch = input.get("character").and_then(Value::as_u64).unwrap_or(1);
             crate::code_tools::execute_lsp_query(Path::new(cwd), op, &resolve_path(raw, cwd), line, ch)
         }
-        crate::code_tools::TOOL_APPLY_PATCH => {
+        crate::code_tools::TOOL_APPLY_PATCH | TOOL_APPLY_PATCH_SNAKE => {
             let patch = input.get("patch").and_then(Value::as_str).unwrap_or("");
             match crate::code_tools::parse_patch_operations(patch, Path::new(cwd)) {
                 Ok(ops) => match crate::code_tools::execute_apply_patch(&ops, |_| {}) {
@@ -768,9 +1096,10 @@ pub(crate) fn execute_cancellable_with_mcp_identity(name:&str,input:&Value,cwd:&
                 Err(e) => (e, true),
             }
         }
-        TOOL_READ => {
+        TOOL_READ | TOOL_READ_FILE_SNAKE => {
             let raw = input
                 .get("file_path")
+                .or_else(|| input.get("path"))
                 .and_then(|v| v.as_str())
                 .unwrap_or("");
             let target = resolve_path(raw, cwd);
@@ -831,27 +1160,36 @@ pub(crate) fn execute_cancellable_with_mcp_identity(name:&str,input:&Value,cwd:&
                 Err(err) => (format!("Cannot read {}: {err}", target.display()), true),
             }
         }
-        TOOL_WRITE => {
+        TOOL_WRITE | TOOL_WRITE_FILE_SNAKE => {
             let raw = input
                 .get("file_path")
+                .or_else(|| input.get("path"))
                 .and_then(|v| v.as_str())
                 .unwrap_or("");
             let content = input.get("content").and_then(|v| v.as_str()).unwrap_or("");
             let target = resolve_path(raw, cwd);
             if let Some(parent) = target.parent() {
-                let _ = std::fs::create_dir_all(parent);
+                if let Err(err) = std::fs::create_dir_all(parent) {
+                    return (format!("Cannot create parent directory for {}: {err}", target.display()), true);
+                }
             }
             match std::fs::write(&target, content) {
-                Ok(()) => (
-                    format!("Wrote {} bytes to {}", content.len(), target.display()),
-                    false,
-                ),
+                Ok(()) => {
+                    if !target.is_file() {
+                        return (format!("Write verification failed for {}", target.display()), true);
+                    }
+                    (
+                        format!("Wrote {} bytes to {}", content.len(), target.display()),
+                        false,
+                    )
+                }
                 Err(err) => (format!("Cannot write {}: {err}", target.display()), true),
             }
         }
-        TOOL_EDIT => {
+        TOOL_EDIT | TOOL_EDIT_FILE_SNAKE => {
             let raw = input
                 .get("file_path")
+                .or_else(|| input.get("path"))
                 .and_then(|v| v.as_str())
                 .unwrap_or("");
             let old = input
@@ -907,6 +1245,77 @@ pub(crate) fn execute_cancellable_with_mcp_identity(name:&str,input:&Value,cwd:&
                 Err(err) => (format!("Cannot read {}: {err}", target.display()), true),
             }
         }
+        TOOL_CREATE_DIR | TOOL_CREATE_DIRECTORY_SNAKE => {
+            let raw = input
+                .get("path")
+                .or_else(|| input.get("file_path"))
+                .and_then(Value::as_str)
+                .unwrap_or("");
+            let target = resolve_path(raw, cwd);
+            match std::fs::create_dir_all(&target) {
+                Ok(()) => {
+                    if !target.is_dir() {
+                        return (format!("Directory verification failed for {}", target.display()), true);
+                    }
+                    (format!("Created directory {}", target.display()), false)
+                }
+                Err(err) => (format!("Cannot create directory {}: {err}", target.display()), true),
+            }
+        }
+        TOOL_MOVE_FILE | TOOL_MOVE_FILE_SNAKE => {
+            let raw_src = input
+                .get("source")
+                .or_else(|| input.get("from"))
+                .and_then(Value::as_str)
+                .unwrap_or("");
+            let raw_dst = input
+                .get("destination")
+                .or_else(|| input.get("to"))
+                .and_then(Value::as_str)
+                .unwrap_or("");
+            let src = resolve_path(raw_src, cwd);
+            let dst = resolve_path(raw_dst, cwd);
+            if !src.exists() {
+                return (format!("Cannot move {}: source path does not exist", src.display()), true);
+            }
+            if let Some(parent) = dst.parent() {
+                if let Err(err) = std::fs::create_dir_all(parent) {
+                    return (format!("Cannot create destination directory for {}: {err}", dst.display()), true);
+                }
+            }
+            match std::fs::rename(&src, &dst) {
+                Ok(()) => {
+                    if !dst.exists() || src.exists() {
+                        return (format!("Move verification failed from {} to {}", src.display(), dst.display()), true);
+                    }
+                    (format!("Moved {} to {}", src.display(), dst.display()), false)
+                }
+                Err(err) => (format!("Cannot move {} to {}: {err}", src.display(), dst.display()), true),
+            }
+        }
+        TOOL_DELETE_FILE | TOOL_DELETE_FILE_SNAKE => {
+            let raw = input
+                .get("file_path")
+                .or_else(|| input.get("path"))
+                .and_then(Value::as_str)
+                .unwrap_or("");
+            let target = resolve_path(raw, cwd);
+            let Ok(meta) = std::fs::symlink_metadata(&target) else {
+                return (format!("Cannot delete {}: file does not exist", target.display()), true);
+            };
+            if meta.is_dir() {
+                return (format!("Cannot delete {}: path is a directory, not a file", target.display()), true);
+            }
+            match std::fs::remove_file(&target) {
+                Ok(()) => {
+                    if target.exists() {
+                        return (format!("Delete verification failed for {}", target.display()), true);
+                    }
+                    (format!("Deleted {}", target.display()), false)
+                }
+                Err(err) => (format!("Cannot delete {}: {err}", target.display()), true),
+            }
+        }
         TOOL_WEB_FETCH => {
             let url = input.get("url").and_then(|v| v.as_str()).unwrap_or("");
             if url.trim().is_empty() {
@@ -950,7 +1359,7 @@ pub(crate) fn execute_cancellable_with_mcp_identity(name:&str,input:&Value,cwd:&
             if requires_approval_with_host(name, input, permission_mode, mcp_host) {
                 return (
                     format!(
-                        "Approval required for MCP tool `{server}/{tool}`. Request this action through the conversation's approval flow."
+                        "OPERAÇÃO NÃO AUTORIZADA: Approval required for MCP tool `{server}/{tool}`. Request this action through the conversation's approval flow."
                     ),
                     true,
                 );
@@ -963,7 +1372,7 @@ pub(crate) fn execute_cancellable_with_mcp_identity(name:&str,input:&Value,cwd:&
                 Err(err) => (format!("MCP call {server}/{tool} failed: {err}"), true),
             }
         }
-        other => (format!("Unknown tool `{other}`."), true),
+        other => (format!("ERRO: FERRAMENTA INDISPONÍVEL: Unknown tool `{other}`."), true),
     }
 }
 

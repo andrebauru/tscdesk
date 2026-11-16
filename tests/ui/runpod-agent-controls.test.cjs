@@ -393,3 +393,31 @@ test("local state polling cannot overwrite a newer user command and stops while 
     assert.equal(providerCalls(f).length, 0);
   } finally { f.close(); }
 });
+
+test("tool activity renders write_file, delete_file, step statuses and AGENT ACTIVITY · RESULTADO summary", async () => {
+  const f = await fixture();
+  try {
+    f.sessions[0].bufferedMessages = [{
+      type: "assistant",
+      message: {
+        content: [
+          { type: "tool_use", id: "call-write", name: "write_file", input: { path: "teste_agente_tscdesk.txt", content: "ok" } },
+          { type: "tool_result", tool_use_id: "call-write", is_error: false, content: "Wrote 2 bytes to teste_agente_tscdesk.txt" },
+          { type: "tool_use", id: "call-del", name: "delete_file", input: { path: "obsoleto.txt" } },
+          { type: "tool_result", tool_use_id: "call-del", is_error: true, content: "OPERAÇÃO CANCELADA PELO USUÁRIO: User denied delete_file." },
+          { type: "tool_use", id: "call-fail", name: "read_file", input: { path: ".env" } },
+          { type: "tool_result", tool_use_id: "call-fail", is_error: true, content: "OPERAÇÃO NÃO AUTORIZADA: Access to sensitive or credential file is blocked (.env)." },
+          { type: "text", text: "Execução concluída." },
+        ],
+      },
+    }];
+    await f.click("Existing conversation");
+    const conv = f.w.document.querySelector("#conversation");
+    assert.match(conv.textContent, /AGENT ACTIVITY · RESULTADO/);
+    assert.match(conv.textContent, /write_file/);
+    assert.match(conv.textContent, /Delete obsoleto\.txt/);
+    assert.ok(conv.querySelector(".tool-step.is-completed"));
+    assert.ok(conv.querySelector(".tool-step.is-cancelled"));
+    assert.ok(conv.querySelector(".tool-step.failed"));
+  } finally { f.close(); }
+});

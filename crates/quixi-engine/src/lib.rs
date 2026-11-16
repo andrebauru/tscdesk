@@ -2939,6 +2939,22 @@ impl QuixiEngine {
     }
 
 
+    fn claims_unverified_file_mutation(text: &str) -> bool {
+        let lower = text.to_lowercase();
+        const PATTERNS: &[&str] = &[
+            "criei o arquivo",
+            "arquivo criado com sucesso",
+            "arquivo foi criado",
+            "modifiquei o arquivo",
+            "arquivo modificado com sucesso",
+            "editei o arquivo",
+            "excluí o arquivo",
+            "arquivo excluído com sucesso",
+            "implementei as alterações no arquivo",
+        ];
+        PATTERNS.iter().any(|p| lower.contains(p))
+    }
+
     /// Runs a full agent turn: the model may call tools (Bash / Read / Write / Edit /
     /// WebFetch / McpCall), we execute them locally and feed the results back, up to
     /// `max_rounds` times. Every tool_use and tool_result is handed to `on_message` so the
@@ -2979,11 +2995,13 @@ impl QuixiEngine {
         let mut on_message = |message| { if !stopped() { on_message(message); } };
 
         let resolved_model = self.provider_manager.resolve_connected_model(model_override);
-        let tools_enabled = {
+        let mut tools_enabled = {
             let state = self.provider_manager.state.read();
             let selected = ProviderManager::provider_for_model(&state, &resolved_model, None);
-            !selected.is_some_and(|p| p.id == "runpod-ollama" || p.api_format == "runpod")
+            !selected.is_some_and(|p| p.api_format == "runpod")
+                && self.provider_manager.model_supports_tools(&resolved_model)
         };
+        let mut model_lacks_tools_notice = !tools_enabled;
         let session_effort = self
             .agent_sessions
             .read()
@@ -3001,7 +3019,7 @@ impl QuixiEngine {
         let explorer_bundle = self
             .explorer
             .context_for_session(session_id, self.model_context_window(&resolved_model));
-        let mut active_cwd = cwd.to_owned();
+        let (mut active_cwd, _) = self.effective_session_workspace(session_id, cwd);
         let workspace_instructions = prompt_context::workspace_instructions(&active_cwd);
         let mut messages: Vec<Value> = vec![json!({ "role": "system", "content": "" })];
         let transcript = self.agent_sessions.read().get(session_id).map(|s|s.buffered_messages.clone())
@@ -3061,6 +3079,7 @@ impl QuixiEngine {
         let mut compactions_count = 0u32;
         let mut ever_mutated_in_turn = false;
         let mut non_mutating_rounds = 0usize;
+        let mut last_tool_failure: Option<String> = None;
 
         for round in 0..MAX_ROUNDS {
             rounds_used = round + 1;
@@ -3068,16 +3087,18 @@ impl QuixiEngine {
                 // Cancellation cleanup belongs to the identity-checked worker guard.
                 return (String::new(), final_model);
             }
-            if let Some(live_cwd) = self
+            let live_session_cwd = self
                 .agent_sessions
                 .read()
                 .get(session_id)
                 .map(|s| s.cwd.clone())
                 .or_else(|| self.code_sessions.read().get(session_id).map(|s| s.cwd.clone()))
-                .filter(|c| !c.trim().is_empty())
-            {
-                active_cwd = live_cwd;
-            }
+                .filter(|c| !c.trim().is_empty());
+            let (resolved_cwd, _) = self.effective_session_workspace(
+                session_id,
+                live_session_cwd.as_deref().unwrap_or(&active_cwd),
+            );
+            active_cwd = resolved_cwd;
             let cwd = active_cwd.as_str();
 
             for message in self.take_steering(session_id) {
@@ -3321,6 +3342,18 @@ impl QuixiEngine {
                         }
                         continue;
                     }
+                }
+                if tools_enabled
+                    && !used_tools
+                    && !streamed_text
+                    && (lower.contains("does not support tools")
+                        || lower.contains("support tool use")
+                        || lower.contains("no endpoints found that support tool")
+                        || lower.contains("tool use is not supported"))
+                {
+                    tools_enabled = false;
+                    model_lacks_tools_notice = true;
+                    continue;
                 }
                 if !defer_direct_mcp && !registry.schemas.is_empty() && !streamed_text
                     && (err.contains("HTTP 400") || err.contains("HTTP 422"))
@@ -3599,8 +3632,12 @@ impl QuixiEngine {
                             }
                         }
                     }
+                    if is_error {
+                        last_tool_failure = Some(output.clone());
+                    }
                     if agent_tools::ToolResults::changes_workspace(&call.name, &output, is_error) {
                         mutated_files = true;
+                        last_tool_failure = None;
                     }
                     result_blocks.push(json!({
                         "type": "tool_result",
@@ -3717,7 +3754,32 @@ impl QuixiEngine {
 
         if stopped() { return (String::new(), final_model); }
         if final_text.trim().is_empty() {
-            final_text = "See the tool results above for what completed and any errors.".to_string();
+            if let Some(ref err) = last_tool_failure {
+                final_text = err.clone();
+            } else {
+                final_text = "See the tool results above for what completed and any errors.".to_string();
+            }
+        } else if !ever_mutated_in_turn {
+            if model_lacks_tools_notice {
+                let notice = format!(
+                    "\n\n[ERRO: FERRAMENTA INDISPONÍVEL: O modelo `{resolved_model}` não possui suporte a execução de ferramentas. Nenhuma operação física foi realizada.]"
+                );
+                on_chunk(StreamChunk::Text(notice.clone()));
+                final_text.push_str(&notice);
+            } else if let Some(ref err) = last_tool_failure {
+                if (err.contains("OPERAÇÃO NÃO AUTORIZADA") || err.contains("ERRO: FERRAMENTA INDISPONÍVEL"))
+                    && !final_text.contains("OPERAÇÃO NÃO AUTORIZADA")
+                    && !final_text.contains("ERRO: FERRAMENTA INDISPONÍVEL")
+                {
+                    let notice = format!("\n\n[{err}]");
+                    on_chunk(StreamChunk::Text(notice.clone()));
+                    final_text.push_str(&notice);
+                }
+            } else if !used_tools && Self::claims_unverified_file_mutation(&final_text) {
+                let notice = "\n\n[ERRO: FERRAMENTA INDISPONÍVEL: Nenhuma ferramenta foi executada pelo agente neste turno. Nenhuma modificação física ocorreu no disco.]";
+                on_chunk(StreamChunk::Text(notice.to_string()));
+                final_text.push_str(notice);
+            }
         }
         if !session_id.trim().is_empty() {
             let est_ctx = context::estimated_tokens(&messages) as u64;

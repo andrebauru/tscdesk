@@ -53,13 +53,48 @@ fn file_access_outside_workspace_with_spill(
     };
 
     match name {
-        "Read" | "Write" | "Edit" | "Lsp" => {
-            let raw = input["file_path"].as_str().unwrap_or(".");
-            check_one(raw, name == "Read")
+        "Read"
+        | "read_file"
+        | "Write"
+        | "write_file"
+        | "Edit"
+        | "edit_file"
+        | "DeleteFile"
+        | "delete_file"
+        | "Lsp" => {
+            let raw = input
+                .get("file_path")
+                .or_else(|| input.get("path"))
+                .and_then(Value::as_str)
+                .unwrap_or(".");
+            check_one(raw, matches!(name, "Read" | "read_file"))
         }
-        "ListDirectory" | "Grep" | "Glob" => {
-            let raw = input["path"].as_str().unwrap_or(".");
-            check_one(raw, name == "Grep")
+        "ListDirectory"
+        | "list_directory"
+        | "Grep"
+        | "Glob"
+        | "search_files"
+        | "CreateDirectory"
+        | "create_directory" => {
+            let raw = input
+                .get("path")
+                .or_else(|| input.get("file_path"))
+                .and_then(Value::as_str)
+                .unwrap_or(".");
+            check_one(raw, matches!(name, "Grep" | "search_files"))
+        }
+        "MoveFile" | "move_file" => {
+            let src = input
+                .get("source")
+                .or_else(|| input.get("from"))
+                .and_then(Value::as_str)
+                .unwrap_or(".");
+            let dst = input
+                .get("destination")
+                .or_else(|| input.get("to"))
+                .and_then(Value::as_str)
+                .unwrap_or(".");
+            check_one(src, false) || check_one(dst, false)
         }
         "TerminalOpen" => match input.get("cwd").and_then(Value::as_str) {
             Some(raw) if !raw.trim().is_empty() => check_one(raw, false),
@@ -72,7 +107,7 @@ fn file_access_outside_workspace_with_spill(
                 false
             }
         }
-        "ApplyPatch" => {
+        "ApplyPatch" | "apply_patch" => {
             let patch = input["patch"].as_str().unwrap_or("");
             match crate::code_tools::parse_patch_operations(patch, Path::new(cwd)) {
                 Ok(ops) => ops.iter().any(|op| {
@@ -91,6 +126,41 @@ fn file_access_outside_workspace_with_spill(
             .is_some_and(|arr| arr.iter().any(|f| check_one(f["path"].as_str().unwrap_or("."), false))),
         _ => false,
     }
+}
+
+fn is_sensitive_secret_file(path: &Path) -> bool {
+    let Some(name) = path.file_name().and_then(|n| n.to_str()) else {
+        return false;
+    };
+    let lower = name.to_ascii_lowercase();
+    if lower == ".env"
+        || (lower.starts_with(".env.")
+            && !matches!(
+                lower.as_str(),
+                ".env.example" | ".env.sample" | ".env.template"
+            ))
+    {
+        return true;
+    }
+    if matches!(
+        lower.as_str(),
+        "id_rsa"
+            | "id_ed25519"
+            | "id_ecdsa"
+            | "id_dsa"
+            | "credentials.json"
+            | "providers.json"
+            | "test-credentials.key"
+            | ".npmrc"
+            | ".pypirc"
+            | ".netrc"
+    ) {
+        return true;
+    }
+    lower.ends_with(".pem")
+        || lower.ends_with(".key")
+        || lower.ends_with(".p12")
+        || lower.ends_with(".pfx")
 }
 
 impl QuixiEngine {
@@ -114,7 +184,21 @@ impl QuixiEngine {
             };
             (
                 p.decision.clone(),
-                matches!(p.request["toolName"].as_str(),Some("Write"|"Edit"|"ApplyPatch")) && p.request["outsideWorkspace"]!=true,
+                matches!(
+                    p.request["toolName"].as_str(),
+                    Some(
+                        "Write"
+                            | "write_file"
+                            | "Edit"
+                            | "edit_file"
+                            | "ApplyPatch"
+                            | "apply_patch"
+                            | "CreateDirectory"
+                            | "create_directory"
+                            | "MoveFile"
+                            | "move_file"
+                    )
+                ) && p.request["outsideWorkspace"] != true,
                 p.request.clone(),
                 p.selected_subagent_model.clone(),
                 p.interaction_reply.clone(),
@@ -493,6 +577,91 @@ impl QuixiEngine {
         }
     }
 
+    /// Resolves the active working directory and authorized roots for `session_id`,
+    /// combining the conversation's selected folders with any folder sources registered
+    /// in the Explorer for that exact session.
+    pub fn effective_session_workspace(&self, session_id: &str, cwd: &str) -> (String, Vec<String>) {
+        let mut allowed_roots = self
+            .agent_sessions
+            .read()
+            .get(session_id)
+            .map(|session| session.user_selected_folders.clone())
+            .unwrap_or_default();
+        if !cwd.trim().is_empty() && !allowed_roots.iter().any(|root| root == cwd) {
+            allowed_roots.push(cwd.to_string());
+        }
+        for folder in self.explorer.folder_roots(session_id) {
+            if !allowed_roots.iter().any(|root| root == &folder) {
+                allowed_roots.push(folder);
+            }
+        }
+        let effective_cwd = if !cwd.trim().is_empty() {
+            cwd.to_string()
+        } else {
+            allowed_roots.first().cloned().unwrap_or_default()
+        };
+        (effective_cwd, allowed_roots)
+    }
+
+    fn blocked_sensitive_access(
+        &self,
+        session_id: &str,
+        name: &str,
+        input: &Value,
+        cwd: &str,
+    ) -> bool {
+        let check_path = |raw: &str| -> bool {
+            let target = agent_tools::resolve_path(raw, cwd);
+            is_sensitive_secret_file(&target)
+                && !self.explorer.is_explicitly_selected_file(session_id, &target)
+        };
+        match name {
+            "Read"
+            | "read_file"
+            | "Write"
+            | "write_file"
+            | "Edit"
+            | "edit_file"
+            | "DeleteFile"
+            | "delete_file" => {
+                let raw = input
+                    .get("file_path")
+                    .or_else(|| input.get("path"))
+                    .and_then(Value::as_str)
+                    .unwrap_or("");
+                !raw.is_empty() && check_path(raw)
+            }
+            "MoveFile" | "move_file" => {
+                let src = input
+                    .get("source")
+                    .or_else(|| input.get("from"))
+                    .and_then(Value::as_str)
+                    .unwrap_or("");
+                let dst = input
+                    .get("destination")
+                    .or_else(|| input.get("to"))
+                    .and_then(Value::as_str)
+                    .unwrap_or("");
+                (!src.is_empty() && check_path(src)) || (!dst.is_empty() && check_path(dst))
+            }
+            "ApplyPatch" | "apply_patch" => {
+                let patch = input["patch"].as_str().unwrap_or("");
+                crate::code_tools::parse_patch_operations(patch, Path::new(cwd)).is_ok_and(|ops| {
+                    ops.iter().any(|op| {
+                        let p = match op {
+                            crate::code_tools::PatchFileOp::Add { path, .. }
+                            | crate::code_tools::PatchFileOp::Update { path, .. }
+                            | crate::code_tools::PatchFileOp::Delete { path } => path,
+                        };
+                        is_sensitive_secret_file(p)
+                            && !self.explorer.is_explicitly_selected_file(session_id, p)
+                    })
+                })
+            }
+            _ => false,
+        }
+    }
+
     pub(crate) fn execute_tool_with_approval(&self, session_id: &str, call_id: &str, name: &str,
         input: &Value, cwd: &str, fallback_mode: &str, cancelled: &AtomicBool) -> (String,bool) {
         self.execute_tool_with_approval_and_mcp_identity(session_id,call_id,name,input,cwd,fallback_mode,cancelled,None)
@@ -503,8 +672,10 @@ impl QuixiEngine {
             Err(message) => return (message, true),
         };
         let _request_scope = ai_request.enter();
+        let (effective_cwd, allowed_roots) = self.effective_session_workspace(session_id, cwd);
+        let cwd = effective_cwd.as_str();
         if cwd.trim().is_empty() && crate::chat_workflows::needs_workspace(name) {
-            return ("No folder is selected for this conversation. Ask the user to choose a folder before reading files, making edits, or running commands. No action was performed.".into(),true);
+            return ("ERRO: FERRAMENTA INDISPONÍVEL: No folder is selected for this conversation. Ask the user to choose a folder before reading files, making edits, or running commands. No action was performed.".into(),true);
         }
         if let Err(error)=agent_tools::validate_input(name,input) {return (error,true);}
         if self.ai_stopped(cancelled) || ai_request.cancelled() {return ("Task stopped. No action performed.".into(),true);}
@@ -514,9 +685,19 @@ impl QuixiEngine {
             && matches!(
                 name,
                 agent_tools::TOOL_BASH
+                    | agent_tools::TOOL_RUN_COMMAND_SNAKE
                     | agent_tools::TOOL_WRITE
+                    | agent_tools::TOOL_WRITE_FILE_SNAKE
                     | agent_tools::TOOL_EDIT
+                    | agent_tools::TOOL_EDIT_FILE_SNAKE
                     | crate::code_tools::TOOL_APPLY_PATCH
+                    | agent_tools::TOOL_APPLY_PATCH_SNAKE
+                    | agent_tools::TOOL_CREATE_DIR
+                    | agent_tools::TOOL_CREATE_DIRECTORY_SNAKE
+                    | agent_tools::TOOL_MOVE_FILE
+                    | agent_tools::TOOL_MOVE_FILE_SNAKE
+                    | agent_tools::TOOL_DELETE_FILE
+                    | agent_tools::TOOL_DELETE_FILE_SNAKE
                     | crate::code_tools::TOOL_CREATE_WORKTREE
                     | "TerminalOpen"
                     | "TerminalSend"
@@ -524,7 +705,7 @@ impl QuixiEngine {
         {
             return (
                 format!(
-                    "Blocked by Plan Mode: `{name}` is disabled while planning. Use read-only inspection tools (`Read`, `Grep`, `Glob`, `ListDirectory`, `Lsp`) and submit your finished plan via `ExitPlanMode`."
+                    "OPERAÇÃO NÃO AUTORIZADA: Blocked by Plan Mode: `{name}` is disabled while planning. Use read-only inspection tools (`Read`, `Grep`, `Glob`, `ListDirectory`, `Lsp`) and submit your finished plan via `ExitPlanMode`."
                 ),
                 true,
             );
@@ -597,14 +778,6 @@ impl QuixiEngine {
                 Ok(identity)=>{if expected.is_some_and(|v|v!=identity){return ("MCP server configuration changed after the tool was advertised. Discover it again before requesting execution.".into(),true);}Some(identity)},Err(error)=>return(format!("MCP server is unavailable: {error}"),true),
             }
         }else{None};
-        // A task may access only its explicitly selected folders (plus its current
-        // worktree cwd). Human approval changes the operation, never this boundary.
-        let mut allowed_roots = self.agent_sessions.read().get(session_id)
-            .map(|session| session.user_selected_folders.clone())
-            .unwrap_or_default();
-        if !cwd.trim().is_empty() && !allowed_roots.iter().any(|root| root == cwd) {
-            allowed_roots.push(cwd.to_string());
-        }
         let outside = file_access_outside_workspace_with_spill(
             name,
             input,
@@ -613,7 +786,10 @@ impl QuixiEngine {
             Some((&self.data_dir, session_id)),
         );
         if outside {
-            return ("Blocked: this path is outside the folders selected for this task. Add the folder to the task before accessing it.".into(), true);
+            return ("OPERAÇÃO NÃO AUTORIZADA: Blocked: this path is outside the folders selected for this task. Add the folder to the task before accessing it.".into(), true);
+        }
+        if self.blocked_sensitive_access(session_id, name, input, cwd) {
+            return ("OPERAÇÃO NÃO AUTORIZADA: Blocked: access to sensitive secret or credential file requires explicit user selection in the Explorer.".into(), true);
         }
         let needs=|mode:&str| agent_tools::requires_approval_with_host(name,input,mode,&self.mcp_host) || (outside&&!matches!(mode,"auto"|"bypassPermissions"));
         let mode=self.current_permission_mode(session_id,fallback_mode);
@@ -627,7 +803,7 @@ impl QuixiEngine {
                 self.execute_session_search_tool(session_id, cwd, input)
             } else if name == crate::collaboration::TOOL_PRESENT {
                 self.execute_present_tool(session_id, cwd, input)
-            } else if name == agent_tools::TOOL_BASH
+            } else if matches!(name, agent_tools::TOOL_BASH | agent_tools::TOOL_RUN_COMMAND_SNAKE)
                 && input.get("run_in_background").and_then(Value::as_bool) == Some(true)
             {
                 let cmd_str = input["command"].as_str().unwrap_or("");
@@ -635,7 +811,7 @@ impl QuixiEngine {
                     && !matches!(execution_mode, "auto" | "bypassPermissions")
                 {
                     (
-                        format!("Blocked destructive background command in `{execution_mode}` mode."),
+                        format!("OPERAÇÃO NÃO AUTORIZADA: Blocked destructive background command in `{execution_mode}` mode."),
                         true,
                     )
                 } else {
@@ -718,23 +894,40 @@ impl QuixiEngine {
                     Err(e) => (format!("CreateWorktree failed: {e}"), true),
                 }
             } else {
+                let path_arg = input
+                    .get("file_path")
+                    .or_else(|| input.get("path"))
+                    .and_then(Value::as_str)
+                    .unwrap_or("");
                 // Freshness check + pre-edit change capture for file mutations:
-                if name == agent_tools::TOOL_EDIT {
-                    let target = agent_tools::resolve_path(
-                        input["file_path"].as_str().unwrap_or(""),
-                        execution_cwd,
-                    );
+                if matches!(name, agent_tools::TOOL_EDIT | agent_tools::TOOL_EDIT_FILE_SNAKE) {
+                    let target = agent_tools::resolve_path(path_arg, execution_cwd);
                     if let Err(stale) = self.observations.verify_not_stale(session_id, &target) {
                         return (stale, true);
                     }
                     self.capture_turn_baseline(session_id, &target);
-                } else if name == agent_tools::TOOL_WRITE {
-                    let target = agent_tools::resolve_path(
-                        input["file_path"].as_str().unwrap_or(""),
-                        execution_cwd,
-                    );
+                } else if matches!(
+                    name,
+                    agent_tools::TOOL_WRITE
+                        | agent_tools::TOOL_WRITE_FILE_SNAKE
+                        | agent_tools::TOOL_DELETE_FILE
+                        | agent_tools::TOOL_DELETE_FILE_SNAKE
+                ) {
+                    let target = agent_tools::resolve_path(path_arg, execution_cwd);
                     self.capture_turn_baseline(session_id, &target);
-                } else if name == crate::code_tools::TOOL_APPLY_PATCH {
+                    if matches!(name, agent_tools::TOOL_DELETE_FILE | agent_tools::TOOL_DELETE_FILE_SNAKE) && target.is_file() {
+                        let trash_dir = self.data_dir.join("trash").join(if session_id.is_empty() { "default" } else { session_id });
+                        let _ = std::fs::create_dir_all(&trash_dir);
+                        let fname = target.file_name().and_then(|n| n.to_str()).unwrap_or("deleted");
+                        let backup = trash_dir.join(format!("{}_{}", Utc::now().timestamp_millis(), fname));
+                        let _ = std::fs::copy(&target, backup);
+                    }
+                } else if matches!(name, agent_tools::TOOL_MOVE_FILE | agent_tools::TOOL_MOVE_FILE_SNAKE) {
+                    let src_arg = input.get("source").or_else(|| input.get("from")).and_then(Value::as_str).unwrap_or("");
+                    let dst_arg = input.get("destination").or_else(|| input.get("to")).and_then(Value::as_str).unwrap_or("");
+                    self.capture_turn_baseline(session_id, &agent_tools::resolve_path(src_arg, execution_cwd));
+                    self.capture_turn_baseline(session_id, &agent_tools::resolve_path(dst_arg, execution_cwd));
+                } else if matches!(name, crate::code_tools::TOOL_APPLY_PATCH | agent_tools::TOOL_APPLY_PATCH_SNAKE) {
                     if let Ok(ops) = crate::code_tools::parse_patch_operations(
                         input["patch"].as_str().unwrap_or(""),
                         Path::new(execution_cwd),
@@ -759,11 +952,16 @@ impl QuixiEngine {
                     mcp_identity.as_deref(),
                 );
                 if self.ai_stopped(cancelled) || ai_request.cancelled() { return ("Task stopped; late tool result suppressed.".into(), true); }
-                if !res.1 && matches!(name, agent_tools::TOOL_READ | agent_tools::TOOL_WRITE | agent_tools::TOOL_EDIT) {
-                    let target = agent_tools::resolve_path(
-                        input["file_path"].as_str().unwrap_or(""),
-                        execution_cwd,
-                    );
+                if !res.1 && matches!(
+                    name,
+                    agent_tools::TOOL_READ
+                        | agent_tools::TOOL_READ_FILE_SNAKE
+                        | agent_tools::TOOL_WRITE
+                        | agent_tools::TOOL_WRITE_FILE_SNAKE
+                        | agent_tools::TOOL_EDIT
+                        | agent_tools::TOOL_EDIT_FILE_SNAKE
+                ) {
+                    let target = agent_tools::resolve_path(path_arg, execution_cwd);
                     self.observations.record(session_id, &target);
                 }
                 res
@@ -777,12 +975,13 @@ impl QuixiEngine {
             return execute(&mode);
         }
         // Smart Auto (`smartAuto`): same-model per-tool safety review (`dsh-experimental-auto-review`).
-        // Destructive commands, outside-workspace paths, and external MCP calls always ask the human.
+        // Destructive commands, file deletions, outside-workspace paths, and external MCP calls always ask the human.
         let mut ai_review_note: Option<String> = None;
         if mode == "smartAuto"
             && !outside
             && name != agent_tools::TOOL_MCP_CALL
-            && !(name == agent_tools::TOOL_BASH
+            && !matches!(name, agent_tools::TOOL_DELETE_FILE | agent_tools::TOOL_DELETE_FILE_SNAKE)
+            && !(matches!(name, agent_tools::TOOL_BASH | agent_tools::TOOL_RUN_COMMAND_SNAKE)
                 && agent_tools::is_destructive_for_test(input["command"].as_str().unwrap_or("")))
         {
             match self.evaluate_smart_auto_safety(session_id, name, input, cwd) {
@@ -813,7 +1012,7 @@ impl QuixiEngine {
         self.pending_approvals.write().remove(&request_id);
         self.permission_event(session_id,"tool_permission_changed");
         if outcome!=1 || self.ai_stopped(cancelled) || ai_request.cancelled() {
-            return ("The action was not approved or the task was stopped. No action was performed. Do not retry it without a new user request.".into(),true);
+            return ("OPERAÇÃO NÃO AUTORIZADA: The action was not approved or the task was stopped. No action was performed. Do not retry it without a new user request.".into(),true);
         }
         execute("auto")
     }

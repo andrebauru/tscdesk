@@ -201,6 +201,63 @@ impl ExplorerStore {
         })
     }
 
+    /// Returns canonical directory roots registered in the Explorer for `session_id` only.
+    /// Individual file sources never grant directory-wide workspace write access, and
+    /// sources from other sessions are never included.
+    pub fn folder_roots(&self, session_id: &str) -> Vec<String> {
+        if session_id.trim().is_empty() {
+            return Vec::new();
+        }
+        let state = self.state.read();
+        let Some(session) = state.sessions.get(session_id) else {
+            return Vec::new();
+        };
+        session
+            .sources
+            .iter()
+            .filter(|source| source.kind == "folder" && !source.missing && Path::new(&source.path).is_dir())
+            .map(|source| source.path.clone())
+            .collect()
+    }
+
+    /// Checks whether `target` was explicitly selected by the user in `session_id`
+    /// (either as a selected individual file source or in `selected_paths` of a folder source).
+    /// Folder-wide inheritance (`source.selected == true` alone) does not count as explicit
+    /// secret-file authorization.
+    pub fn is_explicitly_selected_file(&self, session_id: &str, target: &Path) -> bool {
+        if session_id.trim().is_empty() {
+            return false;
+        }
+        let Ok(target_canon) = target.canonicalize() else {
+            return false;
+        };
+        let state = self.state.read();
+        let Some(session) = state.sessions.get(session_id) else {
+            return false;
+        };
+        for source in &session.sources {
+            if source.kind == "file" {
+                if source.selected
+                    && Path::new(&source.path)
+                        .canonicalize()
+                        .is_ok_and(|canon| canon == target_canon)
+                {
+                    return true;
+                }
+                continue;
+            }
+            let root = Path::new(&source.path);
+            for relative in &source.selected_paths {
+                if let Ok(joined) = tree::safe_join(root, relative) {
+                    if joined == target_canon {
+                        return true;
+                    }
+                }
+            }
+        }
+        false
+    }
+
     fn source_json(&self, source: &ExplorerSource) -> Value {
         let missing = source.missing || !Path::new(&source.path).exists();
         json!({

@@ -217,6 +217,7 @@ impl ProviderManager {
             context_window,
             supports_thinking,
             supports_vision,
+            supports_tools: true,
             ..Default::default()
         }
     }
@@ -3718,9 +3719,27 @@ impl ProviderManager {
         let Some(p)=provider else{return crate::mcp_registry::Budget{enabled:false,..Default::default()}};
         let mut budget=crate::mcp_registry::Budget::default();
         if p.id=="openai" {budget.max_tools=128;budget.max_bytes=192*1024;}
-        if p.context_window<=32768{budget.max_tools=32;budget.max_bytes=32*1024;}
+        if p.context_window<=32768{budget.max_tools=64;budget.max_bytes=64*1024;}
         budget.enabled=p.api_format=="openai"||p.api_format=="anthropic";
         budget
+    }
+
+    /// Returns whether the selected model is advertised as supporting tool calls.
+    /// Text-only catalog models on OpenRouter return `false` so the UI and turn loop
+    /// can inform the user instead of claiming tool execution.
+    pub(crate) fn model_supports_tools(&self, model: &str) -> bool {
+        let st = self.state.read();
+        let Some(entry) = Self::provider_for_model(&st, model, None) else {
+            return true;
+        };
+        if entry.id == "openrouter" {
+            if let Some(m) = entry.models.iter().find(|m| m.id == model) {
+                if !m.is_router && !m.supports_tools {
+                    return false;
+                }
+            }
+        }
+        true
     }
 
     fn supports_subagent_tools(p: &ProviderEntry) -> bool {
@@ -3895,10 +3914,9 @@ impl ProviderManager {
         if api_format == "anthropic" && !base_url.is_empty() {
             return Some(self.complete_anthropic_tool_turn_with_effort(messages,tools,&model_id,&base_url,&credential,&provider_name,effort_override,&mut on_chunk));
         }
-        // Text-only queue worker: never send tool schemas or normalized tool/media replay.
         if provider_id == "runpod-ollama" {
-            return match provider_tool_runpod::complete_runpod_tool_turn(
-                &self.ai_control, original_messages, &model_id, &credential, &endpoint_id,
+            return match provider_tool_runpod::complete_runpod_tool_turn_with_tools(
+                &self.ai_control, original_messages, tools, &model_id, &credential, &endpoint_id,
                 model_id == provider_tool_runpod::DEFAULT_MODEL, &api_format, &mut on_chunk
             ) {
                 Ok(turn) => Some(turn),

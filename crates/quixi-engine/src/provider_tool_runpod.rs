@@ -102,38 +102,225 @@ fn response_json(response: Response) -> Result<Value, String> {
 }
 
 /// Monta o contrato selecionado do worker, omitindo `model` quando o endpoint o define.
+#[cfg(test)]
 fn payload(messages: &[Value], model: &str, use_endpoint_default: bool, format: &str) -> Result<Value, String> {
+    payload_with_tools(messages, &json!([]), model, use_endpoint_default, format)
+}
+
+pub(super) fn payload_with_tools(
+    messages: &[Value],
+    tools: &Value,
+    model: &str,
+    use_endpoint_default: bool,
+    format: &str,
+) -> Result<Value, String> {
+    let tools_offered = tools.as_array().is_some_and(|items| !items.is_empty());
     let mut wire = Vec::new();
     for message in messages {
         let role = message.get("role").and_then(Value::as_str).unwrap_or("");
-        if !matches!(role, "system" | "user" | "assistant")
-            || message.get("tool_calls").is_some_and(|v| !v.is_null() && v != &json!([]))
-            || message.get("function_call").is_some_and(|v| !v.is_null())
-            || message.get("tool_call_id").is_some()
+        if message.get("function_call").is_some_and(|v| !v.is_null())
             || message.get("_responses_output").is_some_and(|v| !v.is_null() && v != &json!([]))
         {
-            return Err("RunPod text-only adapter cannot replay tool calls or tool results.".into());
+            return Err("RunPod adapter cannot replay legacy function_call or Responses API items.".into());
         }
-        let content = message.get("content").and_then(Value::as_str)
-            .ok_or_else(|| "RunPod text-only adapter cannot send images or non-text message content.".to_string())?;
-        wire.push(json!({"role":role,"content":content}));
+        if !tools_offered {
+            if !matches!(role, "system" | "user" | "assistant")
+                || message.get("tool_calls").is_some_and(|v| !v.is_null() && v != &json!([]))
+                || message.get("tool_call_id").is_some()
+            {
+                return Err("RunPod text-only adapter cannot replay tool calls or tool results.".into());
+            }
+            let content = message
+                .get("content")
+                .and_then(Value::as_str)
+                .ok_or_else(|| "RunPod text-only adapter cannot send images or non-text message content.".to_string())?;
+            wire.push(json!({"role": role, "content": content}));
+            continue;
+        }
+        match role {
+            "system" | "user" => {
+                let content = message
+                    .get("content")
+                    .and_then(Value::as_str)
+                    .ok_or_else(|| "RunPod adapter cannot send images or non-text message content.".to_string())?;
+                wire.push(json!({"role": role, "content": content}));
+            }
+            "assistant" => {
+                if let Some(calls) = message
+                    .get("tool_calls")
+                    .and_then(Value::as_array)
+                    .filter(|items| !items.is_empty())
+                {
+                    let mut mapped = Vec::with_capacity(calls.len());
+                    for tc in calls {
+                        let name = tc
+                            .pointer("/function/name")
+                            .and_then(Value::as_str)
+                            .filter(|s| !s.trim().is_empty())
+                            .ok_or_else(|| "RunPod tool replay missing function name.".to_string())?;
+                        let id = tc.get("id").and_then(Value::as_str).unwrap_or("call_0");
+                        let raw_args = tc
+                            .pointer("/function/arguments")
+                            .ok_or_else(|| "RunPod tool replay missing function arguments.".to_string())?;
+                        if format == FORMAT_OLLAMA {
+                            let args_obj = match raw_args {
+                                Value::String(s) => serde_json::from_str::<Value>(s)
+                                    .ok()
+                                    .filter(Value::is_object)
+                                    .ok_or_else(|| "RunPod tool replay arguments must be a JSON object.".to_string())?,
+                                Value::Object(_) => raw_args.clone(),
+                                _ => return Err("RunPod tool replay arguments must be a JSON object.".into()),
+                            };
+                            mapped.push(json!({
+                                "id": id,
+                                "type": "function",
+                                "function": {
+                                    "name": name,
+                                    "arguments": args_obj
+                                }
+                            }));
+                        } else {
+                            let args_str = match raw_args {
+                                Value::String(s) => s.clone(),
+                                Value::Object(_) => serde_json::to_string(raw_args)
+                                    .map_err(|_| "RunPod tool replay arguments could not be serialized.".to_string())?,
+                                _ => return Err("RunPod tool replay arguments must be JSON.".into()),
+                            };
+                            mapped.push(json!({
+                                "id": id,
+                                "type": "function",
+                                "function": {
+                                    "name": name,
+                                    "arguments": args_str
+                                }
+                            }));
+                        }
+                    }
+                    let text_val = message.get("content").and_then(Value::as_str).unwrap_or("");
+                    if format == FORMAT_OLLAMA {
+                        wire.push(json!({
+                            "role": "assistant",
+                            "content": text_val,
+                            "tool_calls": mapped
+                        }));
+                    } else {
+                        wire.push(json!({
+                            "role": "assistant",
+                            "content": if text_val.is_empty() { Value::Null } else { json!(text_val) },
+                            "tool_calls": mapped
+                        }));
+                    }
+                } else {
+                    let content = message
+                        .get("content")
+                        .and_then(Value::as_str)
+                        .ok_or_else(|| "RunPod adapter requires text assistant content.".to_string())?;
+                    wire.push(json!({"role": "assistant", "content": content}));
+                }
+            }
+            "tool" => {
+                let id = message
+                    .get("tool_call_id")
+                    .and_then(Value::as_str)
+                    .filter(|s| !s.trim().is_empty())
+                    .ok_or_else(|| "RunPod tool result missing tool_call_id.".to_string())?;
+                let content = message
+                    .get("content")
+                    .and_then(Value::as_str)
+                    .ok_or_else(|| "RunPod tool result content must be text.".to_string())?;
+                wire.push(json!({
+                    "role": "tool",
+                    "tool_call_id": id,
+                    "content": content
+                }));
+            }
+            _ => return Err("RunPod adapter encountered an unsupported message role.".into()),
+        }
     }
-    if wire.is_empty() { return Err("RunPod requires text messages.".into()); }
-    let mut input = json!({"messages":wire,"stream":false});
+    if wire.is_empty() {
+        return Err("RunPod requires text messages.".into());
+    }
+    let mut input = json!({"messages": wire, "stream": false});
     if !use_endpoint_default {
         input["model"] = json!(model);
     }
+    if tools_offered {
+        input["tools"] = tools.clone();
+        if format == FORMAT_OPENAI {
+            input["tool_choice"] = json!("auto");
+        }
+    }
     match format {
-        FORMAT_OLLAMA => Ok(json!({"input":input})),
-        FORMAT_OPENAI => Ok(json!({"input":{
-            "openai_route":"/v1/chat/completions",
-            "openai_input":input
+        FORMAT_OLLAMA => Ok(json!({"input": input})),
+        FORMAT_OPENAI => Ok(json!({"input": {
+            "openai_route": "/v1/chat/completions",
+            "openai_input": input
         }})),
         _ => Err("Select a supported RunPod worker format.".into()),
     }
 }
 
+fn parse_structured_tool_calls(raw_calls: &[Value]) -> Result<Vec<super::ProviderToolCall>, String> {
+    let mut parsed = Vec::with_capacity(raw_calls.len());
+    for (idx, tc) in raw_calls.iter().enumerate() {
+        let name = tc
+            .pointer("/function/name")
+            .and_then(Value::as_str)
+            .map(str::trim)
+            .filter(|s| !s.is_empty())
+            .ok_or_else(|| "RunPod worker returned an incomplete tool call without function name.".to_string())?;
+        let (args_str, args_val) = match tc.pointer("/function/arguments") {
+            Some(Value::String(s)) => {
+                let trimmed = s.trim();
+                let normalized = if trimmed.is_empty() { "{}" } else { trimmed };
+                let val: Value = serde_json::from_str(normalized)
+                    .map_err(|_| format!("RunPod worker returned invalid JSON arguments for `{name}`."))?;
+                if !val.is_object() {
+                    return Err(format!("RunPod worker returned non-object arguments for `{name}`."));
+                }
+                (normalized.to_string(), val)
+            }
+            Some(val @ Value::Object(_)) => {
+                let serialized = serde_json::to_string(val)
+                    .map_err(|_| format!("RunPod worker arguments for `{name}` could not be serialized."))?;
+                (serialized, val.clone())
+            }
+            None | Some(Value::Null) => ("{}".to_string(), json!({})),
+            _ => return Err(format!("RunPod worker returned invalid arguments format for `{name}`.")),
+        };
+        crate::agent_tools::validate_provider_input(name, &args_val)?;
+        let id = tc
+            .get("id")
+            .and_then(Value::as_str)
+            .map(str::trim)
+            .filter(|s| !s.is_empty())
+            .map(str::to_string)
+            .unwrap_or_else(|| {
+                format!(
+                    "call_rp_{idx}_{}",
+                    &uuid::Uuid::new_v4().to_string().replace('-', "")[..8]
+                )
+            });
+        parsed.push(super::ProviderToolCall {
+            id,
+            name: name.to_string(),
+            arguments: args_str,
+            extra_content: None,
+        });
+    }
+    Ok(parsed)
+}
+
+#[cfg(test)]
 fn parse_output(output: &Value, model: &str) -> Result<ProviderToolTurn, String> {
+    parse_output_with_tools(output, model, false)
+}
+
+pub(super) fn parse_output_with_tools(
+    output: &Value,
+    model: &str,
+    tools_offered: bool,
+) -> Result<ProviderToolTurn, String> {
     // Alguns handlers Ollama retornam `text` diretamente. O conteúdo pode incluir
     // raciocínio e resposta final; preserve-o integralmente, sem tentar recortá-lo.
     let texto_direto = output.get("text").and_then(Value::as_str).or_else(|| {
@@ -151,25 +338,62 @@ fn parse_output(output: &Value, model: &str) -> Result<ProviderToolTurn, String>
     // O worker Ollama atual retorna o objeto nativo, sem envelope OpenAI.
     let ollama = output.as_array().filter(|items| items.len() == 1)
         .map(|items| &items[0]).unwrap_or(output);
-    if let Some(text) = ollama.get("message").and_then(|message| message.get("content"))
-        .and_then(Value::as_str).filter(|text| !text.trim().is_empty())
-    {
-        if ollama.get("done").and_then(Value::as_bool) != Some(true) {
-            return Err("RunPod Ollama worker returned an incomplete response.".into());
+    if let Some(message_obj) = ollama.get("message").and_then(Value::as_object) {
+        let raw_tool_calls = message_obj
+            .get("tool_calls")
+            .and_then(Value::as_array)
+            .filter(|items| !items.is_empty());
+        let text = message_obj
+            .get("content")
+            .and_then(Value::as_str)
+            .unwrap_or("");
+        if let Some(raw_calls) = raw_tool_calls {
+            if !tools_offered {
+                return Err("RunPod worker requested unsupported actions; no tools were executed.".into());
+            }
+            if ollama.get("done").and_then(Value::as_bool) != Some(true) {
+                return Err("RunPod Ollama worker returned an incomplete response.".into());
+            }
+            let tool_calls = parse_structured_tool_calls(raw_calls)?;
+            return Ok(ProviderToolTurn {
+                response_items: Vec::new(),
+                text: text.into(),
+                thinking: String::new(),
+                reasoning_details: None,
+                tool_calls,
+                provider_name: "RunPod Serverless".into(),
+                model_id: model.into(),
+                requested_model: model.into(),
+                effective_model: ollama.get("model").and_then(Value::as_str).map(str::to_string),
+                cost_usd: None,
+                attempts: 1,
+                stream_error: None,
+                usage: Some(ProviderTokenUsage {
+                    input_tokens: ollama.get("prompt_eval_count").and_then(Value::as_u64).unwrap_or(0),
+                    output_tokens: ollama.get("eval_count").and_then(Value::as_u64).unwrap_or(0),
+                    cache_read_tokens: 0,
+                    ..ProviderTokenUsage::default()
+                }),
+            });
         }
-        return Ok(ProviderToolTurn {
-            response_items: Vec::new(), text: text.into(), thinking: String::new(),
-            reasoning_details: None, tool_calls: Vec::new(), provider_name: "RunPod Serverless".into(),
-            model_id: model.into(), requested_model: model.into(),
-            effective_model: ollama.get("model").and_then(Value::as_str).map(str::to_string),
-            cost_usd: None, attempts: 1, stream_error: None,
-            usage: Some(ProviderTokenUsage {
-                input_tokens: ollama.get("prompt_eval_count").and_then(Value::as_u64).unwrap_or(0),
-                output_tokens: ollama.get("eval_count").and_then(Value::as_u64).unwrap_or(0),
-                cache_read_tokens: 0,
-                ..ProviderTokenUsage::default()
-            }),
-        });
+        if !text.trim().is_empty() {
+            if ollama.get("done").and_then(Value::as_bool) != Some(true) {
+                return Err("RunPod Ollama worker returned an incomplete response.".into());
+            }
+            return Ok(ProviderToolTurn {
+                response_items: Vec::new(), text: text.into(), thinking: String::new(),
+                reasoning_details: None, tool_calls: Vec::new(), provider_name: "RunPod Serverless".into(),
+                model_id: model.into(), requested_model: model.into(),
+                effective_model: ollama.get("model").and_then(Value::as_str).map(str::to_string),
+                cost_usd: None, attempts: 1, stream_error: None,
+                usage: Some(ProviderTokenUsage {
+                    input_tokens: ollama.get("prompt_eval_count").and_then(Value::as_u64).unwrap_or(0),
+                    output_tokens: ollama.get("eval_count").and_then(Value::as_u64).unwrap_or(0),
+                    cache_read_tokens: 0,
+                    ..ProviderTokenUsage::default()
+                }),
+            });
+        }
     }
     let items = output.as_array().filter(|a| a.len() == 1)
         .ok_or_else(|| "RunPod worker returned an invalid aggregated completion.".to_string())?;
@@ -187,11 +411,49 @@ fn parse_output(output: &Value, model: &str) -> Result<ProviderToolTurn, String>
     let choice = &choices[0];
     let message = choice.get("message").filter(|m| m.get("role").and_then(Value::as_str) == Some("assistant"))
         .ok_or_else(|| "RunPod worker did not return a complete assistant message.".to_string())?;
-    if message.get("tool_calls").is_some_and(|v| !v.is_null() && v != &json!([]))
-        || message.get("function_call").is_some_and(|v| !v.is_null())
-        || choice.get("finish_reason").and_then(Value::as_str) == Some("tool_calls")
-    {
+    if message.get("function_call").is_some_and(|v| !v.is_null()) {
         return Err("RunPod worker requested unsupported actions; no tools were executed.".into());
+    }
+    let has_tool_calls = message.get("tool_calls").is_some_and(|v| !v.is_null() && v != &json!([]))
+        || choice.get("finish_reason").and_then(Value::as_str) == Some("tool_calls");
+    if has_tool_calls {
+        if !tools_offered {
+            return Err("RunPod worker requested unsupported actions; no tools were executed.".into());
+        }
+        if !matches!(choice.get("finish_reason").and_then(Value::as_str), Some("tool_calls" | "stop")) {
+            return Err("RunPod worker did not finish its complete response successfully.".into());
+        }
+        let raw_calls = message
+            .get("tool_calls")
+            .and_then(Value::as_array)
+            .filter(|a| !a.is_empty())
+            .ok_or_else(|| "RunPod worker returned finish_reason=tool_calls without tool_calls.".to_string())?;
+        let tool_calls = parse_structured_tool_calls(raw_calls)?;
+        let text = message
+            .get("content")
+            .and_then(Value::as_str)
+            .unwrap_or("")
+            .to_string();
+        let usage = completion.get("usage").and_then(|u| Some(ProviderTokenUsage {
+            input_tokens: u.get("prompt_tokens")?.as_u64()?,
+            output_tokens: u.get("completion_tokens")?.as_u64()?,
+            ..Default::default()
+        }));
+        return Ok(ProviderToolTurn {
+            response_items: Vec::new(),
+            text,
+            thinking: String::new(),
+            reasoning_details: None,
+            tool_calls,
+            provider_name: "RunPod Serverless".into(),
+            model_id: model.into(),
+            requested_model: model.into(),
+            effective_model: None,
+            cost_usd: None,
+            attempts: 1,
+            stream_error: None,
+            usage,
+        });
     }
     if choice.get("finish_reason").and_then(Value::as_str) != Some("stop") {
         return Err("RunPod worker did not finish its complete response successfully.".into());
@@ -267,10 +529,18 @@ fn infer<F: FnMut(StreamChunk)>(
     control: &AgentControl, transport: &Transport, endpoint: &str, key: &str,
     messages: &[Value], model: &str, use_endpoint_default: bool, format: &str, on_chunk: &mut F,
 ) -> Result<ProviderToolTurn, String> {
+    infer_with_tools(control, transport, endpoint, key, messages, &json!([]), model, use_endpoint_default, format, on_chunk)
+}
+
+pub(super) fn infer_with_tools<F: FnMut(StreamChunk)>(
+    control: &AgentControl, transport: &Transport, endpoint: &str, key: &str,
+    messages: &[Value], tools: &Value, model: &str, use_endpoint_default: bool, format: &str, on_chunk: &mut F,
+) -> Result<ProviderToolTurn, String> {
     // Register before /run. start_request returns a local rejection when paused.
     let request = control.start_request().map_err(|_| CANCELLED.to_string())?;
     validate_config(endpoint, key, model, use_endpoint_default)?;
-    let body = payload(messages, model, use_endpoint_default, format)?;
+    let tools_offered = tools.as_array().is_some_and(|items| !items.is_empty());
+    let body = payload_with_tools(messages, tools, model, use_endpoint_default, format)?;
     let http = transport.client()?;
     let deadline = Instant::now() + transport.timeout;
     stopped(&request)?;
@@ -310,12 +580,17 @@ fn infer<F: FnMut(StreamChunk)>(
         match status.get("status").and_then(Value::as_str) {
             Some("COMPLETED") => {
                 job.armed = false;
-                let mut turn = parse_output(&status["output"], model)?;
+                let mut turn = parse_output_with_tools(&status["output"], model, tools_offered)?;
                 // Even a successful, malicious upstream answer must not echo the HTTP credential.
                 turn.text = turn.text.replace(key, "[credential redacted]");
+                for call in &mut turn.tool_calls {
+                    call.arguments = call.arguments.replace(key, "[credential redacted]");
+                }
                 stopped(&request)?;
-                // Exactly one complete answer, never incremental SSE or partial tool calls.
-                on_chunk(StreamChunk::Text(turn.text.clone()));
+                // Emit complete text answer when non-empty.
+                if !turn.text.is_empty() {
+                    on_chunk(StreamChunk::Text(turn.text.clone()));
+                }
                 stopped(&request)?;
                 return Ok(turn);
             }
@@ -353,6 +628,13 @@ pub(super) fn complete_runpod_tool_turn<F: FnMut(StreamChunk)>(
     endpoint: &str, use_endpoint_default: bool, format: &str, on_chunk: &mut F,
 ) -> Result<ProviderToolTurn, String> {
     infer(control, &Transport::production(), endpoint, key, messages, model, use_endpoint_default, format, on_chunk)
+}
+
+pub(super) fn complete_runpod_tool_turn_with_tools<F: FnMut(StreamChunk)>(
+    control: &AgentControl, messages: &[Value], tools: &Value, model: &str, key: &str,
+    endpoint: &str, use_endpoint_default: bool, format: &str, on_chunk: &mut F,
+) -> Result<ProviderToolTurn, String> {
+    infer_with_tools(control, &Transport::production(), endpoint, key, messages, tools, model, use_endpoint_default, format, on_chunk)
 }
 
 fn health(control: &AgentControl, transport: &Transport, endpoint: &str, key: &str) -> Result<(), String> {
@@ -803,5 +1085,127 @@ mod tests {
             let error = health(&control, &Transport::loopback(address, Duration::from_secs(2)), ENDPOINT, KEY).unwrap_err();
             assert!(!error.contains(KEY)); server.join().unwrap();
         }
+    }
+
+    #[test]
+    fn runpod_structured_tool_calls_and_replay_work_in_both_formats() {
+        let tools = crate::agent_tools::tool_schemas();
+        let ollama_tool_out = json!({
+            "model": MODEL,
+            "message": {
+                "role": "assistant",
+                "content": "",
+                "tool_calls": [{
+                    "id": "call_1",
+                    "type": "function",
+                    "function": {
+                        "name": "write_file",
+                        "arguments": {
+                            "file_path": "TESTE_AGENTE.txt",
+                            "content": "FERRAMENTA DE ESCRITA FUNCIONANDO"
+                        }
+                    }
+                }]
+            },
+            "done": true,
+            "prompt_eval_count": 42,
+            "eval_count": 15
+        });
+        let (address, requests, server) = fixture(vec![
+            reply(
+                "POST /v2/fixture_123/run HTTP/1.1",
+                json!({"id":"job-tc-1","status":"COMPLETED","output":ollama_tool_out}),
+            ),
+            reply(
+                "POST /v2/fixture_123/run HTTP/1.1",
+                json!({
+                    "id":"job-tc-2",
+                    "status":"COMPLETED",
+                    "output":{
+                        "model": MODEL,
+                        "message": {"role": "assistant", "content": "Arquivo TESTE_AGENTE.txt criado e verificado."},
+                        "done": true
+                    }
+                }),
+            ),
+        ]);
+        let (control, _profile) = control();
+        let transport = Transport::loopback(address, Duration::from_secs(2));
+        let mut chunks = Vec::new();
+        let turn1 = infer_with_tools(
+            &control,
+            &transport,
+            ENDPOINT,
+            KEY,
+            &messages(),
+            &tools,
+            MODEL,
+            false,
+            FORMAT_OLLAMA,
+            &mut |c| chunks.push(c),
+        )
+        .unwrap();
+        assert_eq!(turn1.tool_calls.len(), 1);
+        assert_eq!(turn1.tool_calls[0].name, "write_file");
+        assert!(turn1.tool_calls[0].arguments.contains("TESTE_AGENTE.txt"));
+
+        // Execute physically on a temp workspace and replay tool result to RunPod:
+        let ws = tempfile::tempdir().unwrap();
+        let host = quixi_mcp::McpHost::new();
+        let args_val: Value = serde_json::from_str(&turn1.tool_calls[0].arguments).unwrap();
+        let (exec_out, exec_err) = crate::agent_tools::execute(
+            &turn1.tool_calls[0].name,
+            &args_val,
+            ws.path().to_str().unwrap(),
+            "auto",
+            &host,
+        );
+        assert!(!exec_err, "{exec_out}");
+        assert_eq!(
+            std::fs::read_to_string(ws.path().join("TESTE_AGENTE.txt")).unwrap(),
+            "FERRAMENTA DE ESCRITA FUNCIONANDO"
+        );
+
+        let round2_messages = vec![
+            json!({"role":"user","content":"Crie TESTE_AGENTE.txt"}),
+            json!({
+                "role":"assistant",
+                "content":"",
+                "tool_calls":[{
+                    "id": turn1.tool_calls[0].id,
+                    "type": "function",
+                    "function": {
+                        "name": turn1.tool_calls[0].name,
+                        "arguments": turn1.tool_calls[0].arguments
+                    }
+                }]
+            }),
+            json!({
+                "role":"tool",
+                "tool_call_id": turn1.tool_calls[0].id,
+                "content": exec_out
+            }),
+        ];
+        let turn2 = infer_with_tools(
+            &control,
+            &transport,
+            ENDPOINT,
+            KEY,
+            &round2_messages,
+            &tools,
+            MODEL,
+            false,
+            FORMAT_OLLAMA,
+            &mut |c| chunks.push(c),
+        )
+        .unwrap();
+        server.join().unwrap();
+        assert!(turn2.tool_calls.is_empty());
+        assert!(turn2.text.contains("TESTE_AGENTE.txt"));
+        let sent = requests.lock().unwrap();
+        assert!(sent[0].1["input"]["tools"].is_array());
+        assert_eq!(sent[1].1["input"]["messages"][2]["role"], "tool");
+        // In FORMAT_OLLAMA, assistant tool_calls arguments are replayed as a JSON object:
+        assert!(sent[1].1["input"]["messages"][1]["tool_calls"][0]["function"]["arguments"].is_object());
     }
 }

@@ -2307,25 +2307,42 @@
       );
       return card;
     }
-    const edit = ["Write", "Edit"].includes(request.toolName) && !request.outsideWorkspace;
+    const isDelete = ["DeleteFile", "delete_file"].includes(request.toolName);
+    const edit =
+      [
+        "Write",
+        "write_file",
+        "Edit",
+        "edit_file",
+        "ApplyPatch",
+        "apply_patch",
+        "CreateDirectory",
+        "create_directory",
+        "MoveFile",
+        "move_file",
+      ].includes(request.toolName) && !request.outsideWorkspace;
     const input = request.input || {};
     const card = el(
       "section",
       { class: "permission-card", "aria-label": "Permission requested" },
       request.subagent ? el("p", {class:"hint"}, "Subagent: " + request.subagent.title + " · Approval applies to this conversation") : null,
       request.aiReviewNote ? el("p", {class:"hint"}, "Smart Auto safety note: " + request.aiReviewNote) : null,
-      el("h3", {}, request.outsideWorkspace ? "Allow access outside this workspace?" : edit ? "Allow file changes?" : "Allow this action?"),
+      el("h3", {}, request.outsideWorkspace ? "Allow access outside this workspace?" : isDelete ? "Confirm file deletion?" : edit ? "Allow file changes?" : "Allow this action?"),
       el(
         "p",
         {},
-        edit
-          ? (request.toolName === "Write" ? "Create or update " : "Edit ") +
-              (input.file_path || "file")
-          : input.file_path || input.path || input.description ||
-              input.command ||
-              [request.toolName, input.server, input.tool]
-                .filter(Boolean)
-                .join(" · "),
+        isDelete
+          ? "Delete " + (input.file_path || input.path || "file")
+          : edit
+            ? (request.toolName === "Write" || request.toolName === "write_file"
+                ? "Create or update "
+                : "Edit ") +
+                (input.file_path || input.path || input.source || "file")
+            : input.file_path || input.path || input.description ||
+                input.command ||
+                [request.toolName, input.server, input.tool]
+                  .filter(Boolean)
+                  .join(" · "),
       ),
       el(
         "details",
@@ -2334,7 +2351,7 @@
         el(
           "pre",
           {},
-          request.toolName === "Write"
+          request.toolName === "Write" || request.toolName === "write_file"
             ? input.content || "(empty file)"
             : JSON.stringify(input, null, 2),
         ),
@@ -2392,7 +2409,14 @@
   function toolActivity(group, active, opened) {
     const failed = group.steps.filter((s) => s.result?.is_error).length;
     const fileOnly = group.steps.every((s) =>
-      ["Read", "ListDirectory", "Grep"].includes(s.call?.name),
+      [
+        "Read",
+        "read_file",
+        "ListDirectory",
+        "list_directory",
+        "Grep",
+        "search_files",
+      ].includes(s.call?.name),
     );
     const label = fileOnly
       ? active
@@ -2429,27 +2453,89 @@
       ),
     );
     const rows = el("div", { class: "activity-steps" });
+    let executedTools = 0;
+    let inspectedFiles = 0;
+    let modifiedFiles = 0;
+    let commandsApproved = 0;
     for (const step of group.steps) {
       const call = step.call,
         result = step.result;
       const bad = !!result?.is_error;
+      const cancelled =
+        bad &&
+        /stopped|cancelled|cancelad|denied|not approved|interrupted/i.test(
+          String(result?.content || ""),
+        );
+      if (result && !bad) {
+        executedTools += 1;
+        if (
+          [
+            "Read",
+            "read_file",
+            "ListDirectory",
+            "list_directory",
+            "Grep",
+            "Glob",
+            "search_files",
+            "Lsp",
+          ].includes(call?.name)
+        ) {
+          inspectedFiles += 1;
+        } else if (
+          [
+            "Write",
+            "write_file",
+            "Edit",
+            "edit_file",
+            "ApplyPatch",
+            "apply_patch",
+            "CreateDirectory",
+            "create_directory",
+            "MoveFile",
+            "move_file",
+            "DeleteFile",
+            "delete_file",
+          ].includes(call?.name)
+        ) {
+          modifiedFiles += 1;
+        } else if (["Bash", "run_command"].includes(call?.name)) {
+          commandsApproved += 1;
+        }
+      }
       const input = call?.input || {};
-      const path = input.file_path || input.path || sPath();
+      const path = input.file_path || input.path || input.source || sPath();
       const basename = String(path).split(/[\\/]/).filter(Boolean).pop() || ".";
       let title = call?.name || (bad ? "Tool action failed" : "Tool result");
-      if (call?.name === "Read") title = "Read " + basename;
-      else if (call?.name === "ListDirectory")
+      if (call?.name === "Read" || call?.name === "read_file")
+        title = "Read " + basename;
+      else if (
+        call?.name === "ListDirectory" ||
+        call?.name === "list_directory"
+      )
         title =
           "List " +
           (path === "."
             ? sPath().split(/[\\/]/).filter(Boolean).pop() || "folder"
             : basename);
-      else if (call?.name === "Grep")
-        title = "Search " + (input.query || "workspace");
+      else if (call?.name === "Grep" || call?.name === "search_files")
+        title = "Search " + (input.query || input.pattern || "workspace");
       else if (call?.name === "Glob")
         title = "Find files " + (input.pattern || "");
-      else if (call?.name === "ApplyPatch")
+      else if (call?.name === "ApplyPatch" || call?.name === "apply_patch")
         title = "Apply patch";
+      else if (
+        call?.name === "CreateDirectory" ||
+        call?.name === "create_directory"
+      )
+        title = "Create directory " + basename;
+      else if (call?.name === "MoveFile" || call?.name === "move_file")
+        title =
+          "Move " +
+          (input.source || input.from || basename) +
+          " → " +
+          (input.destination || input.to || "");
+      else if (call?.name === "DeleteFile" || call?.name === "delete_file")
+        title = "Delete " + basename;
       else if (call?.name === "Lsp")
         title = `LSP ${input.operation || "query"} · ${basename}`;
       else if (call?.name === "TodoWrite")
@@ -2474,9 +2560,11 @@
         title = `${call.name} ${input.terminal_id || input.name || ""}`.trim();
       else if (call?.name?.startsWith("Job"))
         title = `${call.name} ${input.job_id || ""}`.trim();
-      else if (call?.name === "Bash")
+      else if (call?.name === "Bash" || call?.name === "run_command")
         title = input.description || (input.run_in_background ? "Run background command" : "Run command");
-      else if (["Write", "Edit"].includes(call?.name))
+      else if (
+        ["Write", "write_file", "Edit", "edit_file"].includes(call?.name)
+      )
         title = call.name + " " + basename;
       else if (call?.name === "McpCall")
         title =
@@ -2486,19 +2574,32 @@
         .get(session()?.sessionId)
         ?.some((r) => r.toolCallId === step.id);
       const status = result
-        ? bad
-          ? "Failed"
-          : "Completed"
+        ? cancelled
+          ? "Cancelled"
+          : bad
+            ? "Failed"
+            : "Completed"
         : awaiting
           ? "Awaiting approval"
           : active
             ? "Running…"
             : "No result recorded";
+      const stateClass = result
+        ? cancelled
+          ? " is-cancelled"
+          : bad
+            ? ""
+            : " is-completed"
+        : awaiting
+          ? " is-awaiting"
+          : active
+            ? " is-running"
+            : " is-requested";
       const key = group.key + "/" + step.id;
       const row = el(
         "details",
         {
-          class: "tool-card tool-step" + (bad ? " failed" : ""),
+          class: "tool-card tool-step" + (bad ? " failed" : "") + stateClass,
           "data-disclosure": key,
           open: opened.has(key),
         },
@@ -2530,6 +2631,21 @@
         );
       rows.append(row);
     }
+    const summaryParts = [
+      `${executedTools} ferramentas executadas`,
+      `${inspectedFiles} arquivos analisados`,
+      `${modifiedFiles} arquivos modificados`,
+      commandsApproved ? `${commandsApproved} comandos aprovados` : null,
+      failed ? `${failed} falhas` : null,
+    ].filter(Boolean);
+    rows.append(
+      el(
+        "div",
+        { class: "activity-result-summary" },
+        el("strong", {}, "AGENT ACTIVITY · RESULTADO"),
+        el("span", {}, summaryParts.join(" · ")),
+      ),
+    );
     node.append(rows);
     function sPath() {
       return session()?.cwd || currentFolder() || ".";

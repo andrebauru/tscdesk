@@ -630,3 +630,509 @@ fn postmortem_regressions_64kb_agents_md_posix_bash_heredoc_and_cumulative_telem
     assert_eq!(tel.usage.input_tokens, 1100);
     assert_eq!(tel.usage.output_tokens, 80);
 }
+
+#[test]
+fn tests_a_b_c_g_write_read_edit_and_all_10_tools_execute_physically_with_openrouter_and_explorer() {
+    let (engine, eng_dir) = fixture_engine();
+    let work = eng_dir.path().join("proj_explorer");
+    fs::create_dir_all(&work).unwrap();
+
+    // Start a session WITHOUT legacy cwd; register the workspace folder via Explorer!
+    let sid = engine.start_agent_session(&json!({
+        "permissionMode": "auto",
+        "model": "anthropic/claude-sonnet-4.6"
+    }));
+    let added = engine
+        .explorer
+        .add_source(&sid, &json!({ "path": work.to_string_lossy() }));
+    assert!(added.get("error").is_none(), "{added}");
+
+    let server = spawn_replay_server(
+        &engine,
+        "openrouter",
+        "anthropic/claude-sonnet-4.6",
+        vec![
+            // Round 1 (Teste A): write_file creates TESTE_AGENTE.txt
+            ReplayStep::ok(vec![json!({
+                "choices": [{
+                    "delta": {
+                        "tool_calls": [{
+                            "index": 0,
+                            "id": "call_write_a",
+                            "type": "function",
+                            "function": {
+                                "name": "write_file",
+                                "arguments": json!({
+                                    "file_path": "TESTE_AGENTE.txt",
+                                    "content": "FERRAMENTA DE ESCRITA FUNCIONANDO"
+                                }).to_string()
+                            }
+                        }]
+                    },
+                    "finish_reason": "tool_calls"
+                }]
+            })]),
+            // Round 2 (Teste B): read_file reads TESTE_AGENTE.txt
+            ReplayStep::ok(vec![json!({
+                "choices": [{
+                    "delta": {
+                        "tool_calls": [{
+                            "index": 0,
+                            "id": "call_read_b",
+                            "type": "function",
+                            "function": {
+                                "name": "read_file",
+                                "arguments": json!({
+                                    "file_path": "TESTE_AGENTE.txt"
+                                }).to_string()
+                            }
+                        }]
+                    },
+                    "finish_reason": "tool_calls"
+                }]
+            })]),
+            // Round 3 (Teste C): edit_file updates TESTE_AGENTE.txt
+            ReplayStep::ok(vec![json!({
+                "choices": [{
+                    "delta": {
+                        "tool_calls": [{
+                            "index": 0,
+                            "id": "call_edit_c",
+                            "type": "function",
+                            "function": {
+                                "name": "edit_file",
+                                "arguments": json!({
+                                    "file_path": "TESTE_AGENTE.txt",
+                                    "old_string": "FERRAMENTA DE ESCRITA FUNCIONANDO",
+                                    "new_string": "FERRAMENTA DE EDICAO FUNCIONANDO"
+                                }).to_string()
+                            }
+                        }]
+                    },
+                    "finish_reason": "tool_calls"
+                }]
+            })]),
+            // Round 4: read_file again + create_directory + move_file + apply_patch + list_directory + search_files
+            ReplayStep::ok(vec![json!({
+                "choices": [{
+                    "delta": {
+                        "tool_calls": [
+                            {
+                                "index": 0,
+                                "id": "call_read_c2",
+                                "type": "function",
+                                "function": {
+                                    "name": "read_file",
+                                    "arguments": json!({"file_path": "TESTE_AGENTE.txt"}).to_string()
+                                }
+                            },
+                            {
+                                "index": 1,
+                                "id": "call_mkdir",
+                                "type": "function",
+                                "function": {
+                                    "name": "create_directory",
+                                    "arguments": json!({"path": "src/components"}).to_string()
+                                }
+                            },
+                            {
+                                "index": 2,
+                                "id": "call_patch",
+                                "type": "function",
+                                "function": {
+                                    "name": "apply_patch",
+                                    "arguments": json!({
+                                        "patch": "*** Begin Patch\n*** Add File: src/components/temp.rs\n+pub const OK: bool = true;\n*** End Patch"
+                                    }).to_string()
+                                }
+                            },
+                            {
+                                "index": 3,
+                                "id": "call_move",
+                                "type": "function",
+                                "function": {
+                                    "name": "move_file",
+                                    "arguments": json!({
+                                        "source": "src/components/temp.rs",
+                                        "destination": "src/components/explorer.rs"
+                                    }).to_string()
+                                }
+                            },
+                            {
+                                "index": 4,
+                                "id": "call_list",
+                                "type": "function",
+                                "function": {
+                                    "name": "list_directory",
+                                    "arguments": json!({"path": "src/components"}).to_string()
+                                }
+                            },
+                            {
+                                "index": 5,
+                                "id": "call_search",
+                                "type": "function",
+                                "function": {
+                                    "name": "search_files",
+                                    "arguments": json!({"query": "EDICAO FUNCIONANDO"}).to_string()
+                                }
+                            }
+                        ]
+                    },
+                    "finish_reason": "tool_calls"
+                }]
+            })]),
+            // Round 5: final response
+            ReplayStep::ok(vec![json!({
+                "choices": [{
+                    "delta": { "content": "Todas as operações físicas concluídas e verificadas." },
+                    "finish_reason": "stop"
+                }]
+            })]),
+        ],
+    );
+
+    let (reply, _) = engine.generate_reply_with_tools_streaming(
+        "Crie o arquivo TESTE_AGENTE.txt, leia-o e edite-o.",
+        "",
+        &[],
+        Some("anthropic/claude-sonnet-4.6"),
+        "auto",
+        &sid,
+        &AtomicBool::new(false),
+        |_| {},
+        |_| {},
+    );
+    let requests = server.join().unwrap();
+    assert_eq!(requests.len(), 5);
+    assert!(reply.contains("operações físicas concluídas"));
+
+    // Verify physical state on disk:
+    assert_eq!(
+        fs::read_to_string(work.join("TESTE_AGENTE.txt")).unwrap(),
+        "FERRAMENTA DE EDICAO FUNCIONANDO"
+    );
+    assert!(work.join("src/components").is_dir());
+    assert!(!work.join("src/components/temp.rs").exists());
+    assert_eq!(
+        fs::read_to_string(work.join("src/components/explorer.rs")).unwrap(),
+        "pub const OK: bool = true;\n"
+    );
+
+    // Verify Round 3 received the exact Read output from Round 2 ("FERRAMENTA DE ESCRITA FUNCIONANDO"):
+    assert!(requests[2]["messages"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .any(|m| m["role"] == "tool"
+            && m["tool_call_id"] == "call_read_b"
+            && m["content"]
+                .as_str()
+                .unwrap()
+                .contains("FERRAMENTA DE ESCRITA FUNCIONANDO")));
+
+    // Verify Round 5 received the updated Read output from Round 4 ("FERRAMENTA DE EDICAO FUNCIONANDO"):
+    assert!(requests[4]["messages"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .any(|m| m["role"] == "tool"
+            && m["tool_call_id"] == "call_read_c2"
+            && m["content"]
+                .as_str()
+                .unwrap()
+                .contains("FERRAMENTA DE EDICAO FUNCIONANDO")));
+}
+
+#[test]
+fn test_d_isolation_prevents_cross_project_modifications_or_reads() {
+    let (engine, eng_dir) = fixture_engine();
+    let proj_a = eng_dir.path().join("proj_a");
+    let proj_b = eng_dir.path().join("proj_b");
+    fs::create_dir_all(&proj_a).unwrap();
+    fs::create_dir_all(&proj_b).unwrap();
+    fs::write(proj_b.join("intacto.txt"), "CONTEUDO_ORIGINAL_B").unwrap();
+
+    let sid_a = engine.start_agent_session(&json!({ "permissionMode": "auto" }));
+    let sid_b = engine.start_agent_session(&json!({ "permissionMode": "auto" }));
+    engine
+        .explorer
+        .add_source(&sid_a, &json!({ "path": proj_a.to_string_lossy() }));
+    engine
+        .explorer
+        .add_source(&sid_b, &json!({ "path": proj_b.to_string_lossy() }));
+
+    let cancelled = AtomicBool::new(false);
+    for (tool, args) in [
+        (
+            "write_file",
+            json!({"file_path": proj_b.join("invadido.txt"), "content": "NAO PODE"}),
+        ),
+        (
+            "write_file",
+            json!({"file_path": "../proj_b/invadido.txt", "content": "NAO PODE"}),
+        ),
+        (
+            "edit_file",
+            json!({"file_path": proj_b.join("intacto.txt"), "old_string": "CONTEUDO_ORIGINAL_B", "new_string": "HACKEADO"}),
+        ),
+        (
+            "read_file",
+            json!({"file_path": proj_b.join("intacto.txt")}),
+        ),
+        (
+            "delete_file",
+            json!({"file_path": proj_b.join("intacto.txt")}),
+        ),
+    ] {
+        let (out, is_err) =
+            engine.execute_tool_with_approval(&sid_a, "iso-call", tool, &args, "", "auto", &cancelled);
+        assert!(is_err, "Tool {tool} must fail across projects: {out}");
+        assert!(
+            out.contains("OPERAÇÃO NÃO AUTORIZADA"),
+            "Expected OPERAÇÃO NÃO AUTORIZADA, got: {out}"
+        );
+    }
+
+    assert!(!proj_b.join("invadido.txt").exists());
+    assert_eq!(
+        fs::read_to_string(proj_b.join("intacto.txt")).unwrap(),
+        "CONTEUDO_ORIGINAL_B"
+    );
+}
+
+#[test]
+fn test_e_delete_file_requires_explicit_approval_and_backs_up_to_trash() {
+    let (engine, eng_dir) = fixture_engine();
+    let work = eng_dir.path().join("work_del");
+    fs::create_dir_all(&work).unwrap();
+    let target = work.join("para_excluir.txt");
+    fs::write(&target, "DADOS_RECUPERAVEIS").unwrap();
+
+    // Even in `acceptEdits` mode (where Write/Edit are pre-approved), `delete_file` MUST ask!
+    let sid = engine.start_agent_session(&json!({
+        "cwd": work.to_string_lossy(),
+        "userSelectedFolders": [work.to_string_lossy()],
+        "permissionMode": "acceptEdits"
+    }));
+    let cancelled = engine.begin_turn(&sid);
+
+    // 1. Deny deletion:
+    {
+        let eng = engine.clone();
+        let sid_cl = sid.clone();
+        let cwd_cl = work.to_string_lossy().to_string();
+        let sig_cl = cancelled.clone();
+        let handle = std::thread::spawn(move || {
+            eng.execute_tool_with_approval(
+                &sid_cl,
+                "del-1",
+                "delete_file",
+                &json!({"file_path": "para_excluir.txt"}),
+                &cwd_cl,
+                "acceptEdits",
+                &sig_cl,
+            )
+        });
+        let req_id = loop {
+            let pending = engine.pending_tool_approvals(&sid);
+            if let Some(first) = pending.as_array().and_then(|a| a.first()) {
+                assert_eq!(first["toolName"], "delete_file");
+                break first["requestId"].as_str().unwrap().to_string();
+            }
+            std::thread::sleep(Duration::from_millis(10));
+        };
+        assert!(target.exists(), "File must not be deleted before approval");
+        engine.resolve_tool_approval(&sid, &req_id, "deny");
+        let (out, is_err) = handle.join().unwrap();
+        assert!(is_err);
+        assert!(out.contains("OPERAÇÃO NÃO AUTORIZADA"));
+        assert!(target.exists(), "Denied deletion must leave file on disk");
+    }
+
+    // 2. Approve deletion (`allow_once`):
+    {
+        let eng = engine.clone();
+        let sid_cl = sid.clone();
+        let cwd_cl = work.to_string_lossy().to_string();
+        let sig_cl = cancelled.clone();
+        let handle = std::thread::spawn(move || {
+            eng.execute_tool_with_approval(
+                &sid_cl,
+                "del-2",
+                "delete_file",
+                &json!({"file_path": "para_excluir.txt"}),
+                &cwd_cl,
+                "acceptEdits",
+                &sig_cl,
+            )
+        });
+        let req_id = loop {
+            let pending = engine.pending_tool_approvals(&sid);
+            if let Some(first) = pending.as_array().and_then(|a| a.first()) {
+                break first["requestId"].as_str().unwrap().to_string();
+            }
+            std::thread::sleep(Duration::from_millis(10));
+        };
+        engine.resolve_tool_approval(&sid, &req_id, "allow_once");
+        let (out, is_err) = handle.join().unwrap();
+        assert!(!is_err, "{out}");
+        assert!(!target.exists(), "Approved deletion must remove file from workspace");
+        // Verify backup copy in session trash:
+        let trash_dir = engine.data_dir.join("trash").join(&sid);
+        let backups: Vec<_> = fs::read_dir(&trash_dir).unwrap().flatten().collect();
+        assert_eq!(backups.len(), 1);
+        assert_eq!(
+            fs::read_to_string(backups[0].path()).unwrap(),
+            "DADOS_RECUPERAVEIS"
+        );
+    }
+}
+
+#[test]
+fn test_h_failures_and_false_conclusion_prevention() {
+    let (engine, eng_dir) = fixture_engine();
+    let work = eng_dir.path().join("work_fail");
+    fs::create_dir_all(&work).unwrap();
+    fs::write(work.join(".env"), "API_SECRET=top-secret-123").unwrap();
+
+    let sid = engine.start_agent_session(&json!({
+        "cwd": work.to_string_lossy(),
+        "userSelectedFolders": [work.to_string_lossy()],
+        "permissionMode": "auto",
+        "model": "custom-model"
+    }));
+    let cwd = work.to_str().unwrap();
+    let cancelled = AtomicBool::new(false);
+
+    // 1. Unknown tool -> ERRO: FERRAMENTA INDISPONÍVEL
+    let (out, err) = engine.execute_tool_with_approval(
+        &sid,
+        "f1",
+        "ferramenta_inexistente",
+        &json!({}),
+        cwd,
+        "auto",
+        &cancelled,
+    );
+    assert!(err);
+    assert!(out.contains("ERRO: FERRAMENTA INDISPONÍVEL"), "{out}");
+
+    // 2. Invalid arguments -> error
+    for (tool, bad_args) in [
+        ("write_file", json!({"content": "missing path"})),
+        ("edit_file", json!({"file_path": "a.txt", "old_string": "a"})),
+        ("move_file", json!({"source": "a.txt"})),
+        ("delete_file", json!({})),
+        ("search_files", json!({})),
+    ] {
+        let (out, err) =
+            engine.execute_tool_with_approval(&sid, "f2", tool, &bad_args, cwd, "auto", &cancelled);
+        assert!(err, "Invalid args for {tool} must fail: {out}");
+    }
+
+    // 3. Sensitive secret file (.env) blocked unless explicitly selected in Explorer
+    let (env_out, env_err) = engine.execute_tool_with_approval(
+        &sid,
+        "f3",
+        "read_file",
+        &json!({"file_path": ".env"}),
+        cwd,
+        "auto",
+        &cancelled,
+    );
+    assert!(env_err);
+    assert!(env_out.contains("OPERAÇÃO NÃO AUTORIZADA"), "{env_out}");
+
+    // Selecting the folder as a whole still does NOT unlock `.env`:
+    let added = engine
+        .explorer
+        .add_source(&sid, &json!({"path": work.to_string_lossy()}));
+    let source_id = added["sourceId"].as_str().unwrap().to_string();
+    engine.explorer.set_source_selected(&sid, &source_id, true);
+    let (_, env_err2) = engine.execute_tool_with_approval(
+        &sid,
+        "f3b",
+        "read_file",
+        &json!({"file_path": ".env"}),
+        cwd,
+        "auto",
+        &cancelled,
+    );
+    assert!(env_err2);
+
+    // Explicit individual selection of `.env` in Explorer unlocks reading it:
+    engine
+        .explorer
+        .set_file_selected(&sid, &source_id, ".env", true);
+    let (env_ok_out, env_ok_err) = engine.execute_tool_with_approval(
+        &sid,
+        "f3c",
+        "read_file",
+        &json!({"file_path": ".env"}),
+        cwd,
+        "auto",
+        &cancelled,
+    );
+    assert!(!env_ok_err, "{env_ok_out}");
+    assert!(env_ok_out.contains("API_SECRET=top-secret-123"));
+
+    // 4. Nonexistent file -> error
+    for (tool, args) in [
+        ("read_file", json!({"file_path": "nao_existe.txt"})),
+        (
+            "edit_file",
+            json!({"file_path": "nao_existe.txt", "old_string": "a", "new_string": "b"}),
+        ),
+        ("delete_file", json!({"file_path": "nao_existe.txt"})),
+        (
+            "move_file",
+            json!({"source": "nao_existe.txt", "destination": "outro.txt"}),
+        ),
+    ] {
+        let (out, err) =
+            engine.execute_tool_with_approval(&sid, "f4", tool, &args, cwd, "auto", &cancelled);
+        assert!(err, "Missing file for {tool} must fail: {out}");
+    }
+
+    // 5. Command timeout -> error
+    let (timeout_out, timeout_err) = engine.execute_tool_with_approval(
+        &sid,
+        "f5",
+        "run_command",
+        &json!({"command": "sleep 3", "timeout_seconds": 1}),
+        cwd,
+        "auto",
+        &cancelled,
+    );
+    assert!(timeout_err, "Timed out command must report error: {timeout_out}");
+
+    // 6. False conclusion prevention: model claims it created a file without calling any tool
+    let server = spawn_replay_server(
+        &engine,
+        "custom",
+        "custom-model",
+        vec![ReplayStep::ok(vec![json!({
+            "choices": [{
+                "delta": { "content": "Criei o arquivo FALSO.txt com sucesso no projeto." },
+                "finish_reason": "stop"
+            }]
+        })])],
+    );
+    let (reply, _) = engine.generate_reply_with_tools_streaming(
+        "Crie FALSO.txt",
+        cwd,
+        &[],
+        Some("custom-model"),
+        "auto",
+        &sid,
+        &AtomicBool::new(false),
+        |_| {},
+        |_| {},
+    );
+    server.join().unwrap();
+    assert!(!work.join("FALSO.txt").exists());
+    assert!(
+        reply.contains("ERRO: FERRAMENTA INDISPONÍVEL"),
+        "Unverified file creation claim must be flagged: {reply}"
+    );
+}

@@ -285,7 +285,10 @@ fn locate_git_dirs(cwd: &Path) -> (Option<PathBuf>, Option<PathBuf>) {
         .output()
         .ok()
         .filter(|o| o.status.success())
-        .map(|o| PathBuf::from(String::from_utf8_lossy(&o.stdout).trim()));
+        .map(|o| {
+            let p = PathBuf::from(String::from_utf8_lossy(&o.stdout).trim());
+            fs::canonicalize(&p).unwrap_or(p)
+        });
     let common = Command::new("git")
         .args(["rev-parse", "--git-common-dir"])
         .current_dir(cwd)

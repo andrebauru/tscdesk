@@ -804,11 +804,31 @@ impl ShellHostEngine {
     ) -> Result<Value> {
         use std::{io::Read, process::Stdio, sync::{atomic::Ordering, mpsc}, time::{Duration, Instant}};
         if cancelled.load(Ordering::SeqCst) { anyhow::bail!("Command cancelled before starting"); }
-        let shell = Self::posix_bash_shell();
-        let base_args: Vec<String> = if cfg!(target_os = "windows") {
-            vec!["/D".into(), "/S".into(), "/C".into(), command.into()]
+        let git_bash = if cfg!(target_os = "windows")
+            && (command.contains("<<")
+                || command.trim_start().starts_with("printf ")
+                || command.trim_start().starts_with("sleep ")
+                || command.contains("$?"))
+        {
+            [
+                r"C:\Program Files\Git\bin\bash.exe",
+                r"C:\Program Files\Git\usr\bin\bash.exe",
+            ]
+            .into_iter()
+            .find(|p| Path::new(p).is_file())
+            .map(str::to_string)
         } else {
-            vec!["-c".into(), command.into()]
+            None
+        };
+        let (shell, base_args): (String, Vec<String>) = if let Some(bash_bin) = git_bash {
+            (bash_bin, vec!["-c".into(), command.into()])
+        } else if cfg!(target_os = "windows") {
+            (
+                Self::posix_bash_shell(),
+                vec!["/D".into(), "/S".into(), "/C".into(), command.into()],
+            )
+        } else {
+            (Self::posix_bash_shell(), vec!["-c".into(), command.into()])
         };
         let confined = if let Some(policy) = sandbox_policy {
             Some(quixi_platform::sandbox::ProcessSandbox::confine(&shell, &base_args, policy))

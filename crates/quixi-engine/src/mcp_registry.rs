@@ -12,8 +12,8 @@ pub(crate) struct Budget {
 impl Default for Budget {
     fn default() -> Self {
         Self {
-            max_tools: 64,
-            max_bytes: 64 * 1024,
+            max_tools: 96,
+            max_bytes: 96 * 1024,
             enabled: true,
         }
     }
