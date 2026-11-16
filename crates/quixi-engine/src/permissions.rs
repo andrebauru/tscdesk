@@ -786,9 +786,29 @@ impl QuixiEngine {
             Some((&self.data_dir, session_id)),
         );
         if outside {
+            agent_tools::log_tool_pipeline(
+                "PERMISSION_DECISION",
+                json!({
+                    "session_id": session_id,
+                    "call_id": call_id,
+                    "tool_name": name,
+                    "decision": "denied_outside_workspace",
+                    "cwd": cwd,
+                }),
+            );
             return ("OPERAÇÃO NÃO AUTORIZADA: Blocked: this path is outside the folders selected for this task. Add the folder to the task before accessing it.".into(), true);
         }
         if self.blocked_sensitive_access(session_id, name, input, cwd) {
+            agent_tools::log_tool_pipeline(
+                "PERMISSION_DECISION",
+                json!({
+                    "session_id": session_id,
+                    "call_id": call_id,
+                    "tool_name": name,
+                    "decision": "denied_sensitive_file",
+                    "cwd": cwd,
+                }),
+            );
             return ("OPERAÇÃO NÃO AUTORIZADA: Blocked: access to sensitive secret or credential file requires explicit user selection in the Explorer.".into(), true);
         }
         let needs=|mode:&str| agent_tools::requires_approval_with_host(name,input,mode,&self.mcp_host) || (outside&&!matches!(mode,"auto"|"bypassPermissions"));
@@ -951,6 +971,18 @@ impl QuixiEngine {
                     cancelled,
                     mcp_identity.as_deref(),
                 );
+                agent_tools::log_tool_pipeline(
+                    "TOOL_EXECUTION_RESULT",
+                    json!({
+                        "session_id": session_id,
+                        "call_id": call_id,
+                        "tool_name": name,
+                        "execution_cwd": execution_cwd,
+                        "execution_mode": execution_mode,
+                        "is_error": res.1,
+                        "output_preview": res.0.chars().take(300).collect::<String>(),
+                    }),
+                );
                 if self.ai_stopped(cancelled) || ai_request.cancelled() { return ("Task stopped; late tool result suppressed.".into(), true); }
                 if !res.1 && matches!(
                     name,
@@ -972,6 +1004,16 @@ impl QuixiEngine {
             )
         };
         if !needs(&mode) {
+            agent_tools::log_tool_pipeline(
+                "PERMISSION_DECISION",
+                json!({
+                    "session_id": session_id,
+                    "call_id": call_id,
+                    "tool_name": name,
+                    "decision": "granted_automatic",
+                    "mode": mode,
+                }),
+            );
             return execute(&mode);
         }
         // Smart Auto (`smartAuto`): same-model per-tool safety review (`dsh-experimental-auto-review`).
@@ -1012,8 +1054,28 @@ impl QuixiEngine {
         self.pending_approvals.write().remove(&request_id);
         self.permission_event(session_id,"tool_permission_changed");
         if outcome!=1 || self.ai_stopped(cancelled) || ai_request.cancelled() {
+            agent_tools::log_tool_pipeline(
+                "PERMISSION_DECISION",
+                json!({
+                    "session_id": session_id,
+                    "call_id": call_id,
+                    "tool_name": name,
+                    "decision": "denied_by_user_or_stopped",
+                    "mode": mode,
+                }),
+            );
             return ("OPERAÇÃO NÃO AUTORIZADA: The action was not approved or the task was stopped. No action was performed. Do not retry it without a new user request.".into(),true);
         }
+        agent_tools::log_tool_pipeline(
+            "PERMISSION_DECISION",
+            json!({
+                "session_id": session_id,
+                "call_id": call_id,
+                "tool_name": name,
+                "decision": "granted_by_user",
+                "mode": mode,
+            }),
+        );
         execute("auto")
     }
 

@@ -35,6 +35,40 @@ pub const TOOL_DELETE_FILE_SNAKE: &str = "delete_file";
 pub const TOOL_RUN_COMMAND_SNAKE: &str = "run_command";
 pub const TOOL_SEARCH_FILES_SNAKE: &str = "search_files";
 
+pub(crate) fn log_tool_pipeline(stage: &str, details: Value) {
+    let ts = chrono::Utc::now().to_rfc3339();
+    tracing::info!(stage = %stage, timestamp = %ts, details = %details, "tscide_tool_pipeline");
+    let target_path = if let Ok(custom) = std::env::var("QUIXI_TOOL_PIPELINE_LOG_PATH") {
+        if custom.trim().is_empty() {
+            None
+        } else {
+            Some(PathBuf::from(custom))
+        }
+    } else if !cfg!(test) && quixi_proto::paths::test_profile().is_none() {
+        Some(quixi_proto::paths::data_dir().join("tool-pipeline.log"))
+    } else {
+        None
+    };
+    if let Some(path) = target_path {
+        if let Some(parent) = path.parent() {
+            let _ = std::fs::create_dir_all(parent);
+        }
+        if let Ok(mut file) = std::fs::OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open(path)
+        {
+            use std::io::Write;
+            let entry = json!({
+                "timestamp": ts,
+                "stage": stage,
+                "details": details,
+            });
+            let _ = writeln!(file, "{entry}");
+        }
+    }
+}
+
 /// OpenAI-style function schemas handed to the provider.
 pub fn tool_schemas() -> Value {
     json!([

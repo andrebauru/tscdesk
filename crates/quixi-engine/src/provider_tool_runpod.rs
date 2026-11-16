@@ -105,6 +105,12 @@ fn build_runpod_tool_prompt_section(tools: &Value) -> String {
     let Some(items) = tools.as_array().filter(|a| !a.is_empty()) else {
         return String::new();
     };
+    let has_workspace_file_tools = items.iter().any(|t| {
+        matches!(
+            t.pointer("/function/name").and_then(Value::as_str),
+            Some("write_file" | "Write" | "read_file" | "Read")
+        )
+    });
     let mut section = String::from(
         "\n\n## RunPod / Ollama Structured Tool Calling Protocol\n\
 You have direct access to workspace tools executed by the TSCDesk engine. \
@@ -116,9 +122,14 @@ Mandatory execution rules:\n\
 1. NEVER write bash scripts, code examples, or hypothetical walkthroughs when asked to create, read, edit, move, delete, or list files. Emit the `<tool_call>...</tool_call>` block directly.\n\
 2. NEVER claim a file was created, read, or modified before you emit `<tool_call>` and receive the engine's `<tool_response>` with the real disk result.\n\
 3. Before calling `edit_file` (or `Edit`) on an existing file, you MUST call `read_file` (or `Read`) on that file first.\n\
-4. Emit one `<tool_call>...</tool_call>` block per step (or the immediate step's calls) and stop generating so the engine can execute the tool and return `<tool_response>`.\n\n\
-Available tools:\n",
+4. Emit one `<tool_call>...</tool_call>` block per step (or the immediate step's calls) and stop generating so the engine can execute the tool and return `<tool_response>`.\n",
     );
+    if !has_workspace_file_tools {
+        section.push_str(
+            "5. NOTE: No workspace folder is currently selected for this conversation, so workspace file tools (`write_file`, `read_file`, `edit_file`, `list_directory`) are not in the offered tool list below.\n",
+        );
+    }
+    section.push_str("\nAvailable tools:\n");
     for tool in items {
         let Some(func) = tool.get("function") else {
             continue;
@@ -225,13 +236,48 @@ fn strip_code_fences(raw: &str) -> &str {
     trimmed
 }
 
+fn parse_candidate_json_stream(candidate: &str, start_idx: usize) -> Option<Vec<Value>> {
+    let trimmed = candidate.trim();
+    if !(trimmed.starts_with('{') || trimmed.starts_with('[')) {
+        return None;
+    }
+    let values: Vec<Value> = serde_json::Deserializer::from_str(trimmed)
+        .into_iter::<Value>()
+        .collect::<Result<Vec<Value>, _>>()
+        .ok()?;
+    if values.is_empty() {
+        return None;
+    }
+    let mut normalized = Vec::new();
+    for val in &values {
+        if let Some(arr) = val.as_array() {
+            if arr.is_empty() {
+                return None;
+            }
+            for item in arr {
+                let norm = normalize_tool_call_json_item(item, start_idx + normalized.len())?;
+                normalized.push(norm);
+            }
+        } else {
+            let norm = normalize_tool_call_json_item(val, start_idx + normalized.len())?;
+            normalized.push(norm);
+        }
+    }
+    if normalized.is_empty() || parse_structured_tool_calls(&normalized).is_err() {
+        return None;
+    }
+    Some(normalized)
+}
+
 fn extract_structured_tool_calls_from_text(
     raw_text: &str,
 ) -> Option<(String, String, Vec<super::ProviderToolCall>)> {
     let (thinking, visible) = split_think_and_text(raw_text);
     let mut raw_calls = Vec::new();
     let mut cleaned = visible.clone();
+    let mut extraction_source = "none";
 
+    // Pass 1: Explicit `<tool_call>...</tool_call>` or `<function_call>...</function_call>` blocks
     for (open_tag, close_tag) in [
         ("<tool_call>", "</tool_call>"),
         ("<function_call>", "</function_call>"),
@@ -247,72 +293,75 @@ fn extract_structured_tool_calls_from_text(
                 (&cleaned[body_start..], cleaned.len())
             };
             let candidate = strip_code_fences(inner);
-            if let Ok(val) = serde_json::from_str::<Value>(candidate) {
-                let mut matched_any = false;
-                if let Some(arr) = val.as_array() {
-                    for item in arr {
-                        if let Some(norm) = normalize_tool_call_json_item(item, raw_calls.len()) {
-                            raw_calls.push(norm);
-                            matched_any = true;
-                        }
-                    }
-                } else if let Some(norm) = normalize_tool_call_json_item(&val, raw_calls.len()) {
-                    raw_calls.push(norm);
-                    matched_any = true;
-                }
-                if matched_any {
-                    cleaned.replace_range(start..remove_end, "");
-                    cursor = start;
-                    continue;
-                }
+            if let Some(mut calls) = parse_candidate_json_stream(candidate, raw_calls.len()) {
+                raw_calls.append(&mut calls);
+                extraction_source = "xml_tag";
+                cleaned.replace_range(start..remove_end, "");
+                cursor = start;
+                continue;
             }
             cursor = remove_end;
         }
     }
 
+    // Pass 2: Markdown fenced blocks (```json ... ```, ```tool_call ... ```, ``` ... ```)
     if raw_calls.is_empty() {
-        let trimmed = cleaned.trim();
-        if (trimmed.starts_with('{') && trimmed.ends_with('}'))
-            || (trimmed.starts_with('[') && trimmed.ends_with(']'))
-        {
-            let stream: Result<Vec<Value>, _> = serde_json::Deserializer::from_str(trimmed)
-                .into_iter::<Value>()
-                .collect();
-            if let Ok(values) = stream {
-                if !values.is_empty() {
-                    let mut stream_calls = Vec::new();
-                    let mut all_valid = true;
-                    for val in &values {
-                        if let Some(arr) = val.as_array() {
-                            if arr.is_empty() {
-                                all_valid = false;
-                                break;
-                            }
-                            for item in arr {
-                                if let Some(norm) =
-                                    normalize_tool_call_json_item(item, stream_calls.len())
-                                {
-                                    stream_calls.push(norm);
-                                } else {
-                                    all_valid = false;
-                                    break;
-                                }
-                            }
-                        } else if let Some(norm) =
-                            normalize_tool_call_json_item(val, stream_calls.len())
-                        {
-                            stream_calls.push(norm);
-                        } else {
-                            all_valid = false;
-                            break;
+        let mut cursor = 0usize;
+        while let Some(rel_open) = cleaned[cursor..].find("```") {
+            let open_pos = cursor + rel_open;
+            let after_open = open_pos + 3;
+            let Some(rel_close) = cleaned[after_open..].find("```") else {
+                break;
+            };
+            let close_pos = after_open + rel_close;
+            let remove_end = close_pos + 3;
+            let block_body = match cleaned[after_open..close_pos].find('\n') {
+                Some(nl) => &cleaned[after_open + nl + 1..close_pos],
+                None => &cleaned[after_open..close_pos],
+            };
+            if let Some(mut calls) = parse_candidate_json_stream(block_body, raw_calls.len()) {
+                raw_calls.append(&mut calls);
+                extraction_source = "fenced_json";
+                cleaned.replace_range(open_pos..remove_end, "");
+                cursor = open_pos;
+                continue;
+            }
+            cursor = remove_end;
+        }
+    }
+
+    // Pass 3: Whole trimmed message (with or without outer code fences) as JSON tool call stream
+    if raw_calls.is_empty() {
+        let unfenced = strip_code_fences(cleaned.trim());
+        if let Some(calls) = parse_candidate_json_stream(unfenced, 0) {
+            raw_calls = calls;
+            extraction_source = "raw_json_stream";
+            cleaned.clear();
+        }
+    }
+
+    // Pass 4: Embedded top-level JSON tool call objects `{ "name": "...", "arguments": {...} }`
+    if raw_calls.is_empty() {
+        let mut cursor = 0usize;
+        while let Some(rel_brace) = cleaned[cursor..].find('{') {
+            let start = cursor + rel_brace;
+            let slice = &cleaned[start..];
+            let mut stream = serde_json::Deserializer::from_str(slice).into_iter::<Value>();
+            if let Some(Ok(val)) = stream.next() {
+                let consumed = stream.byte_offset();
+                if consumed > 0 {
+                    if let Some(norm) = normalize_tool_call_json_item(&val, raw_calls.len()) {
+                        if parse_structured_tool_calls(std::slice::from_ref(&norm)).is_ok() {
+                            raw_calls.push(norm);
+                            extraction_source = "embedded_json_object";
+                            cleaned.replace_range(start..start + consumed, "");
+                            cursor = start;
+                            continue;
                         }
-                    }
-                    if all_valid && !stream_calls.is_empty() {
-                        raw_calls = stream_calls;
-                        cleaned.clear();
                     }
                 }
             }
+            cursor = start + 1;
         }
     }
 
@@ -322,6 +371,17 @@ fn extract_structured_tool_calls_from_text(
     let validated = parse_structured_tool_calls(&raw_calls).ok()?;
     if validated.is_empty() {
         return None;
+    }
+    for call in &validated {
+        crate::agent_tools::log_tool_pipeline(
+            "PARSER_TOOL_IDENTIFIED",
+            json!({
+                "source": extraction_source,
+                "call_id": call.id,
+                "tool_name": call.name,
+                "arguments": call.arguments,
+            }),
+        );
     }
     Some((thinking, cleaned.trim().to_string(), validated))
 }
@@ -662,6 +722,17 @@ pub(super) fn parse_output_with_tools(
                 return Err("RunPod Ollama worker returned an incomplete response.".into());
             }
             let tool_calls = parse_structured_tool_calls(raw_calls)?;
+            for call in &tool_calls {
+                crate::agent_tools::log_tool_pipeline(
+                    "PARSER_TOOL_IDENTIFIED",
+                    json!({
+                        "source": "native_ollama_tool_calls",
+                        "call_id": call.id,
+                        "tool_name": call.name,
+                        "arguments": call.arguments,
+                    }),
+                );
+            }
             return Ok(ProviderToolTurn {
                 response_items: Vec::new(),
                 text: text.into(),
@@ -765,6 +836,17 @@ pub(super) fn parse_output_with_tools(
             .filter(|a| !a.is_empty())
             .ok_or_else(|| "RunPod worker returned finish_reason=tool_calls without tool_calls.".to_string())?;
         let tool_calls = parse_structured_tool_calls(raw_calls)?;
+        for call in &tool_calls {
+            crate::agent_tools::log_tool_pipeline(
+                "PARSER_TOOL_IDENTIFIED",
+                json!({
+                    "source": "native_openai_tool_calls",
+                    "call_id": call.id,
+                    "tool_name": call.name,
+                    "arguments": call.arguments,
+                }),
+            );
+        }
         let text = message
             .get("content")
             .and_then(Value::as_str)
@@ -947,6 +1029,22 @@ pub(super) fn infer_with_tools<F: FnMut(StreamChunk)>(
         match status.get("status").and_then(Value::as_str) {
             Some("COMPLETED") => {
                 job.armed = false;
+                let raw_preview: String = serde_json::to_string(&status["output"])
+                    .unwrap_or_default()
+                    .replace(key, "[credential redacted]")
+                    .chars()
+                    .take(600)
+                    .collect();
+                crate::agent_tools::log_tool_pipeline(
+                    "MODEL_RESPONSE_RECEIVED",
+                    json!({
+                        "provider": "RunPod Serverless",
+                        "job_id": job.id,
+                        "requested_model": model,
+                        "tools_offered": tools_offered,
+                        "raw_output_preview": raw_preview,
+                    }),
+                );
                 let mut turn = parse_output_with_tools(&status["output"], model, tools_offered)?;
                 // Even a successful, malicious upstream answer must not echo the HTTP credential.
                 turn.text = turn.text.replace(key, "[credential redacted]");
@@ -1746,6 +1844,61 @@ mod tests {
     }
 
     #[test]
+    fn runpod_fenced_and_raw_json_tool_calls_execute_physically() {
+        let ws = tempfile::tempdir().unwrap();
+        let ws_str = ws.path().to_str().unwrap();
+        let host = quixi_mcp::McpHost::new();
+        let tools = crate::agent_tools::tool_schemas();
+
+        // Exact fenced JSON format returned by Qwen/RunPod in session local_272c1f3f
+        let fenced_write_output = json!({
+            "model": "hf.co/bartowski/Qwen2.5-Coder-14B-Instruct-abliterated-GGUF:Q6_K",
+            "message": {
+                "role": "assistant",
+                "content": "```json\n{\n  \"name\": \"write_file\",\n  \"arguments\": {\n    \"path\": \"TESTE_RUNPOD.txt\",\n    \"content\": \"RUNPOD EXECUTOU A ESCRITA COM SUCESSO\"\n  }\n}\n```"
+            },
+            "done": true,
+            "prompt_eval_count": 11514,
+            "eval_count": 54
+        });
+
+        let turn1 = parse_output_with_tools(&fenced_write_output, DEFAULT_MODEL, true).unwrap();
+        assert_eq!(turn1.tool_calls.len(), 1);
+        assert_eq!(turn1.tool_calls[0].name, "write_file");
+        assert_eq!(turn1.text, "");
+
+        let args1: Value = serde_json::from_str(&turn1.tool_calls[0].arguments).unwrap();
+        let (out1, err1) = crate::agent_tools::execute("write_file", &args1, ws_str, "auto", &host);
+        assert!(!err1, "write_file failed: {out1}");
+        let disk_path = ws.path().join("TESTE_RUNPOD.txt");
+        assert!(disk_path.exists());
+        assert_eq!(
+            std::fs::read_to_string(&disk_path).unwrap(),
+            "RUNPOD EXECUTOU A ESCRITA COM SUCESSO"
+        );
+
+        // Raw JSON object without fences or <tool_call> tags
+        let raw_read_output = json!({
+            "model": "hf.co/bartowski/Qwen2.5-Coder-14B-Instruct-abliterated-GGUF:Q6_K",
+            "message": {
+                "role": "assistant",
+                "content": "{\"name\": \"read_file\", \"arguments\": {\"path\": \"TESTE_RUNPOD.txt\"}}"
+            },
+            "done": true,
+            "prompt_eval_count": 12000,
+            "eval_count": 28
+        });
+        let turn2 = parse_output_with_tools(&raw_read_output, DEFAULT_MODEL, true).unwrap();
+        assert_eq!(turn2.tool_calls.len(), 1);
+        assert_eq!(turn2.tool_calls[0].name, "read_file");
+        let args2: Value = serde_json::from_str(&turn2.tool_calls[0].arguments).unwrap();
+        let (out2, err2) = crate::agent_tools::execute("read_file", &args2, ws_str, "auto", &host);
+        assert!(!err2, "read_file failed: {out2}");
+        assert!(out2.contains("RUNPOD EXECUTOU A ESCRITA COM SUCESSO"));
+        assert!(tools.as_array().unwrap().iter().any(|t| t["function"]["name"] == "write_file"));
+    }
+
+    #[test]
     fn live_runpod_endpoint_four_step_tool_execution_verification() {
         if std::env::var("QUIXI_LIVE_RUNPOD_TEST").ok().as_deref() != Some("1") {
             return;
@@ -1905,5 +2058,110 @@ mod tests {
             executed_calls.iter().map(|(n, e, _)| (n, e)).collect::<Vec<_>>(),
             final_disk
         );
+    }
+
+    #[test]
+    fn live_runpod_engine_write_read_pipeline_verification() {
+        if std::env::var("QUIXI_LIVE_RUNPOD_TEST").ok().as_deref() != Some("1") {
+            return;
+        }
+        let config_path = quixi_proto::paths::home_dir()
+            .join(".quixi")
+            .join("providers.json");
+        let Some(merged) = std::fs::read_to_string(&config_path)
+            .ok()
+            .and_then(|s| serde_json::from_str::<Value>(&s).ok())
+            .and_then(|val| crate::credentials::open_readonly_os_vault(&config_path, val).ok())
+            .and_then(|val| ProviderManager::merge_saved_state(ProviderManager::default_catalog(), &val))
+        else {
+            println!("LIVE_ENGINE_STATUS: NÃO VALIDADO (credenciais indisponíveis)");
+            return;
+        };
+        let Some(entry) = merged.providers.into_iter().find(|p| p.id == "runpod-ollama") else {
+            println!("LIVE_ENGINE_STATUS: NÃO VALIDADO (runpod-ollama ausente)");
+            return;
+        };
+        if !entry.configured || entry.endpoint_id.trim().is_empty() || entry.api_key_raw.trim().is_empty() {
+            println!("LIVE_ENGINE_STATUS: NÃO VALIDADO (runpod-ollama não configurado)");
+            return;
+        }
+
+        let data_dir = tempfile::tempdir().unwrap();
+        let ws = tempfile::tempdir().unwrap();
+        let ws_str = ws.path().to_str().unwrap().to_string();
+        let log_path = data_dir.path().join("tool-pipeline.log");
+        unsafe {
+            std::env::set_var("QUIXI_TOOL_PIPELINE_LOG_PATH", &log_path);
+        }
+
+        let engine = crate::QuixiEngine::new_with_data_dir(
+            std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../resources"),
+            data_dir.path().to_path_buf(),
+        );
+        {
+            let mut state = engine.provider_manager.state.write();
+            state.active_provider = "runpod-ollama".into();
+            let active_model_clone = if entry.selected_model.trim().is_empty() {
+                DEFAULT_MODEL.to_string()
+            } else {
+                entry.selected_model.clone()
+            };
+            state.active_model = active_model_clone.clone();
+            if let Some(rp) = state.providers.iter_mut().find(|p| p.id == "runpod-ollama") {
+                rp.configured = true;
+                rp.endpoint_id = entry.endpoint_id.clone();
+                rp.api_key_raw = entry.api_key_raw.clone();
+                rp.selected_model = active_model_clone;
+                rp.api_format = entry.api_format.clone();
+            }
+        }
+
+        let sid = engine.start_agent_session(&json!({
+            "cwd": ws_str,
+            "userSelectedFolders": [ws_str],
+            "permissionMode": "auto",
+            "title": "Live RunPod Pipeline Test"
+        }));
+        let cancelled = std::sync::atomic::AtomicBool::new(false);
+        let mut ui_messages = Vec::new();
+        let mut streamed_chunks = Vec::new();
+        let prompt = "Crie fisicamente o arquivo `TESTE_RUNPOD.txt` na raiz da pasta aberta contendo exatamente:\n\nRUNPOD EXECUTOU A ESCRITA COM SUCESSO\n\nUse a ferramenta `write_file` e depois `read_file` para confirmar a gravação real no disco.";
+        let (reply, final_model) = engine.generate_reply_with_tools_streaming(
+            prompt,
+            &ws_str,
+            &[],
+            None,
+            "auto",
+            &sid,
+            &cancelled,
+            |chunk| streamed_chunks.push(chunk),
+            |msg| ui_messages.push(msg),
+        );
+
+        let disk_path = ws.path().join("TESTE_RUNPOD.txt");
+        let disk_exists = disk_path.exists();
+        let disk_content = std::fs::read_to_string(&disk_path).unwrap_or_default();
+        let log_content = std::fs::read_to_string(&log_path).unwrap_or_default();
+        unsafe {
+            std::env::remove_var("QUIXI_TOOL_PIPELINE_LOG_PATH");
+        }
+
+        println!("LIVE_ENGINE_MODEL: {final_model}");
+        println!("LIVE_ENGINE_DISK_EXISTS: {disk_exists}");
+        println!("LIVE_ENGINE_DISK_CONTENT: {disk_content:?}");
+        println!("LIVE_ENGINE_UI_MESSAGES_COUNT: {}", ui_messages.len());
+        for m in &ui_messages {
+            println!("LIVE_ENGINE_UI_MSG: {}", serde_json::to_string(m).unwrap_or_default());
+        }
+        println!("LIVE_ENGINE_PIPELINE_LOG:\n{log_content}");
+        println!("LIVE_ENGINE_REPLY: {reply:?}");
+
+        assert!(disk_exists, "TESTE_RUNPOD.txt was not created on disk");
+        assert!(disk_content.contains("RUNPOD EXECUTOU A ESCRITA COM SUCESSO"));
+        assert!(log_content.contains("MODEL_RESPONSE_RECEIVED"));
+        assert!(log_content.contains("PARSER_TOOL_IDENTIFIED"));
+        assert!(log_content.contains("DISPATCHER_CALL_SENT"));
+        assert!(log_content.contains("PERMISSION_DECISION"));
+        assert!(log_content.contains("TOOL_EXECUTION_RESULT"));
     }
 }

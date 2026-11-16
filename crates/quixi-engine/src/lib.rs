@@ -3633,6 +3633,18 @@ impl QuixiEngine {
                         return (String::new(), final_model);
                     }
                     let parsed_input = serde_json::from_str::<Value>(&call.arguments);
+                    agent_tools::log_tool_pipeline(
+                        "DISPATCHER_CALL_SENT",
+                        json!({
+                            "session_id": session_id,
+                            "round": round,
+                            "call_id": call.id,
+                            "tool_name": call.name,
+                            "cwd": cwd,
+                            "permission_mode": mode,
+                            "arguments_valid_json": parsed_input.is_ok(),
+                        }),
+                    );
                     let (output, is_error) = match &parsed_input {
                         Ok(input) if registry.route(&call.name).is_some()=>{
                             let route=registry.route(&call.name).unwrap();let input=route.input(input);
