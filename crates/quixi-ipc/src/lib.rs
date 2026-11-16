@@ -258,6 +258,89 @@ impl EipcRouter {
                 Some(paused) => self.engine.set_agent_paused(paused),
                 None => json!({"error":"setAgentState requires {paused: boolean}."}),
             },
+            // --- Explorer: independent sources, explicit selection, per-session isolation ---
+            ("Explorer", "getState") => {
+                let session_id = args.first().and_then(|v| v.get("sessionId").and_then(Value::as_str).or_else(|| v.as_str())).unwrap_or("");
+                self.engine.explorer.get_state(session_id)
+            }
+            ("Explorer", "addSource") => {
+                let session_id = args.first().and_then(|v| v.get("sessionId")).and_then(Value::as_str).unwrap_or("");
+                let body = args.first().cloned().unwrap_or(Value::Null);
+                self.engine.explorer.add_source(session_id, &body)
+            }
+            ("Explorer", "addSources") => {
+                let session_id = args.first().and_then(|v| v.get("sessionId")).and_then(Value::as_str).unwrap_or("");
+                let body = args.first().cloned().unwrap_or(Value::Null);
+                self.engine.explorer.add_sources(session_id, &body)
+            }
+            ("Explorer", "removeSource") => {
+                let session_id = args.first().and_then(|v| v.get("sessionId")).and_then(Value::as_str).unwrap_or("");
+                let source_id = args.first().and_then(|v| v.get("sourceId")).and_then(Value::as_str).unwrap_or("");
+                self.engine.explorer.remove_source(session_id, source_id)
+            }
+            ("Explorer", "transferContext") => {
+                let from = args.first().and_then(|v| v.get("from")).and_then(Value::as_str).unwrap_or("");
+                let to = args.first().and_then(|v| v.get("to")).and_then(Value::as_str).unwrap_or("");
+                self.engine.explorer.transfer_context(from, to)
+            }
+            ("Explorer", "setSourceSelected") => {
+                let session_id = args.first().and_then(|v| v.get("sessionId")).and_then(Value::as_str).unwrap_or("");
+                let source_id = args.first().and_then(|v| v.get("sourceId")).and_then(Value::as_str).unwrap_or("");
+                let selected = args.first().and_then(|v| v.get("selected")).and_then(Value::as_bool).unwrap_or(false);
+                self.engine.explorer.set_source_selected(session_id, source_id, selected)
+            }
+            ("Explorer", "selectAll") => {
+                let session_id = args.first().and_then(|v| v.get("sessionId")).and_then(Value::as_str).unwrap_or("");
+                let selected = args.first().and_then(|v| v.get("selected")).and_then(Value::as_bool).unwrap_or(false);
+                self.engine.explorer.select_all(session_id, selected)
+            }
+            ("Explorer", "setFileSelected") => {
+                let session_id = args.first().and_then(|v| v.get("sessionId")).and_then(Value::as_str).unwrap_or("");
+                let source_id = args.first().and_then(|v| v.get("sourceId")).and_then(Value::as_str).unwrap_or("");
+                let relative_path = args.first().and_then(|v| v.get("relativePath")).and_then(Value::as_str).unwrap_or("");
+                let selected = args.first().and_then(|v| v.get("selected")).and_then(Value::as_bool).unwrap_or(false);
+                self.engine.explorer.set_file_selected(session_id, source_id, relative_path, selected)
+            }
+            ("Explorer", "setDirectorySelected") => {
+                let session_id = args.first().and_then(|v| v.get("sessionId")).and_then(Value::as_str).unwrap_or("");
+                let source_id = args.first().and_then(|v| v.get("sourceId")).and_then(Value::as_str).unwrap_or("");
+                let relative_dir = args.first().and_then(|v| v.get("relativePath")).and_then(Value::as_str).unwrap_or("");
+                let selected = args.first().and_then(|v| v.get("selected")).and_then(Value::as_bool).unwrap_or(false);
+                self.engine.explorer.set_directory_selected(session_id, source_id, relative_dir, selected)
+            }
+            ("Explorer", "setExpanded") => {
+                let session_id = args.first().and_then(|v| v.get("sessionId")).and_then(Value::as_str).unwrap_or("");
+                let source_id = args.first().and_then(|v| v.get("sourceId")).and_then(Value::as_str).unwrap_or("");
+                let relative_dir = args.first().and_then(|v| v.get("relativePath")).and_then(Value::as_str).unwrap_or("");
+                let expanded = args.first().and_then(|v| v.get("expanded")).and_then(Value::as_bool).unwrap_or(false);
+                self.engine.explorer.set_expanded(session_id, source_id, relative_dir, expanded)
+            }
+            ("Explorer", "setPreferences") => {
+                let body = args.first().cloned().unwrap_or(Value::Null);
+                self.engine.explorer.set_preferences(&body)
+            }
+            ("Explorer", "listDirectory") => {
+                let session_id = args.first().and_then(|v| v.get("sessionId")).and_then(Value::as_str).unwrap_or("");
+                let source_id = args.first().and_then(|v| v.get("sourceId")).and_then(Value::as_str).unwrap_or("");
+                let relative_dir = args.first().and_then(|v| v.get("relativePath")).and_then(Value::as_str).unwrap_or("");
+                self.engine.explorer.list_directory(session_id, source_id, relative_dir)
+            }
+            ("Explorer", "previewFile") => {
+                let session_id = args.first().and_then(|v| v.get("sessionId")).and_then(Value::as_str).unwrap_or("");
+                let source_id = args.first().and_then(|v| v.get("sourceId")).and_then(Value::as_str).unwrap_or("");
+                let relative_path = args.first().and_then(|v| v.get("relativePath")).and_then(Value::as_str).unwrap_or("");
+                self.engine.explorer.preview_file(session_id, source_id, relative_path)
+            }
+            ("Explorer", "refresh") => {
+                let session_id = args.first().and_then(|v| v.get("sessionId")).and_then(Value::as_str).unwrap_or("");
+                let source_id = args.first().and_then(|v| v.get("sourceId")).and_then(Value::as_str);
+                self.engine.explorer.refresh(session_id, source_id)
+            }
+            ("Explorer", "contextPreview") => {
+                let session_id = args.first().and_then(|v| v.get("sessionId")).and_then(Value::as_str).unwrap_or("");
+                let window = args.first().and_then(|v| v.get("windowTokens")).and_then(Value::as_u64).unwrap_or(0) as usize;
+                self.engine.explorer.context_preview(session_id, window)
+            }
             // --- AppFeatures & AppPreferences & AppConfig ---
             ("AppFeatures", "getSupportedFeatures") => self.engine.desktop_features.clone(),
             ("AppPreferences", "getPreferences") | ("Preferences", "getPreferences") => {
@@ -2829,6 +2912,58 @@ mod tests {
         assert!(engine.code_sessions.read().is_empty());
         drop(router); drop(engine);
         fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn explorer_rpc_is_scoped_to_the_requested_session() {
+        let (_engine, router) = make_router();
+        let project = std::env::temp_dir().join(format!(
+            "quixi-explorer-ipc-{}",
+            uuid::Uuid::new_v4()
+        ));
+        fs::create_dir_all(&project).unwrap();
+        fs::write(project.join("main.rs"), "fn main() {}").unwrap();
+        let call = |member: &str, args: Vec<Value>| {
+            router.dispatch_service("quixi.web", "Explorer", member, &args)
+        };
+        let added = call(
+            "addSource",
+            vec![json!({"sessionId":"session-a","path":project.to_string_lossy()})],
+        );
+        let source_id = added["sourceId"].as_str().unwrap().to_string();
+        call(
+            "setSourceSelected",
+            vec![json!({"sessionId":"session-a","sourceId":source_id,"selected":true})],
+        );
+        assert_eq!(call("getState", vec![json!({"sessionId":"session-a"})])["selectedFiles"], 1);
+        assert_eq!(
+            call("getState", vec![json!({"sessionId":"session-b"})])["sources"]
+                .as_array()
+                .unwrap()
+                .len(),
+            0
+        );
+        let listing = call(
+            "listDirectory",
+            vec![json!({"sessionId":"session-a","sourceId":source_id,"relativePath":""})],
+        );
+        assert!(listing["entries"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|entry| entry["name"] == "main.rs"));
+        let preview = call(
+            "previewFile",
+            vec![json!({"sessionId":"session-a","sourceId":source_id,"relativePath":"main.rs"})],
+        );
+        assert_eq!(preview["content"], "fn main() {}");
+        let estimate = call(
+            "contextPreview",
+            vec![json!({"sessionId":"session-a","windowTokens":128000})],
+        );
+        assert_eq!(estimate["selectedFiles"], 1);
+        assert!(estimate["budgetChars"].as_u64().unwrap() > 0);
+        fs::remove_dir_all(&project).unwrap();
     }
 
     fn workspace_root() -> PathBuf {

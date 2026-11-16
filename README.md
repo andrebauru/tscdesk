@@ -17,6 +17,7 @@ The repository is named `tscdesk`. Internal Rust crates retain the `quixi-*` com
 
 - **AI chat and providers:** configure OpenRouter, OpenAI, Anthropic, Gemini, DeepSeek, RunPod Serverless, local services, or a compatible custom endpoint. Availability, authentication, prices, and context limits depend on the provider.
 - **Projects and tools:** select folders, inspect and edit files, run commands, review Git changes, organize conversations and HTML artifacts, and connect external MCP tools and skills. Subagents and schedules are available; schedules require the app to remain open.
+- **Explorer and explicit context:** open the **Explorer** panel to add independent folders or individual files, browse a lazy tree, and select exactly which files each conversation sends to the model. Sources and selections are isolated per conversation, saved across restarts, and never merged across projects. See [docs/explorer.md](docs/explorer.md).
 - **Permissions:** Manual asks before edits and commands; Allow file edits permits edits but still asks for commands; Auto permits tool actions. These application approvals are not a guarantee of OS sandboxing. A conversation without a selected folder does not receive workspace file tools.
 - **System integration:** desktop capture, input, clipboard, and folder selection depend on the platform, compositor, and permissions. The in-app browser does not automatically share Chrome tabs or sessions. Direct attachments support images and text, not native PDF or Office ingestion.
 - **ChromeOS:** runs as a Linux application inside Crostini, not as a Chrome extension or native ChromeOS application. Support is experimental; GUI, credentials, permissions, and ARM64 need real-device validation. Share ChromeOS folders with Linux before accessing them under `/mnt/chromeos`.
@@ -134,7 +135,7 @@ The optional skill helper [`.agents/skills/visualize/scripts/render.py`](.agents
 
 ### Documentation
 
-[ChromeOS validation](docs/chromeos.md) · [RunPod](docs/runpod.md) · [Architecture](ARCHITECTURE.md) · [MCP](docs/mcp.md) · [Subagents](docs/subagents.md) · [Task context](docs/scoped-task-context.md)
+[ChromeOS validation](docs/chromeos.md) · [Explorer](docs/explorer.md) · [RunPod](docs/runpod.md) · [Architecture](ARCHITECTURE.md) · [MCP](docs/mcp.md) · [Subagents](docs/subagents.md) · [Task context](docs/scoped-task-context.md)
 
 ### License
 
@@ -176,6 +177,7 @@ Também é possível usar apenas o chat, sem selecionar uma pasta. Nesse caso, a
 | --- | --- |
 | Chat com diferentes provedores | Conectar APIs de IA e endpoints compatíveis com OpenAI; receber respostas progressivamente, escolher modelos e manter histórico. |
 | Arquivos, terminal e Git | Ler, buscar e editar arquivos, executar comandos e inspecionar alterações no projeto selecionado. |
+| Explorer e contexto explícito | Adicionar pastas e arquivos independentes, navegar em árvore sob demanda e escolher exatamente quais arquivos cada conversa envia à IA. As fontes e seleções ficam isoladas por conversa, persistem após reiniciar e nunca são misturadas entre projetos. Consulte [docs/explorer.md](docs/explorer.md). |
 | Projetos | Reunir pastas, instruções, conversas, artefatos e agendamentos. |
 | Artefatos HTML | Criar e visualizar páginas/resultados interativos, consultar revisões e exportar HTML para um arquivo local. |
 | MCP e skills | Conectar ferramentas externas e usar instruções especializadas para tarefas. MCP é um protocolo de integração de ferramentas; não é um modelo de IA. |

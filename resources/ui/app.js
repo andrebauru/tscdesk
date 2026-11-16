@@ -197,6 +197,18 @@
   function draftKey() {
     return state.page === "chat" ? state.id : "new:" + (state.project || "personal");
   }
+  function explorerDraftKey() {
+    return "quixi.explorerDraft:" + (state.project || "personal");
+  }
+  function explorerDraftId() {
+    const key = explorerDraftKey();
+    let id = localStorage.getItem(key);
+    if (!id) {
+      id = "draft-" + crypto.randomUUID();
+      localStorage.setItem(key, id);
+    }
+    return id;
+  }
   function saveDraft() {
     const input=document.getElementById("prompt");
     if(!input)return;
@@ -927,6 +939,7 @@
           el("span", { id: "session-collab-pills", class: "row" }, contextMeterPill(s), jobsBadge(s)),
           currentFolder() ? button("Open in…", () => openInDialog(s), "quiet", "folder") : null,
           button("Find in conversation", () => openConversationFind(), "quiet", "search"),
+          button("Explorer", () => contextDrawer("explorer"), "quiet", "folder"),
           button("Files & context", () => contextDrawer(), "quiet"),
           ib("Delete conversation", "trash", () => deleteSession(s)),
           ib("Task actions", "more", () => sessionMenu(s)),
@@ -994,6 +1007,12 @@
                 },
               ),
             ),
+          ),
+          el(
+            "div",
+            { class: "welcome-actions" },
+            button("Open Explorer", () => contextDrawer("explorer"), "quiet", "folder"),
+            el("small", { class: "hint" }, "Choose folders or files and the exact context for this new conversation."),
           ),
         ),
       );
@@ -1509,6 +1528,14 @@
         if(!s?.sessionId)throw new Error(s?.error||"Conversation could not be created.");
         s._kind = "task";
         state.sessions.unshift(s);
+        const draftExplorerKey = explorerDraftKey();
+        const draftExplorer = localStorage.getItem(draftExplorerKey);
+        if (draftExplorer) {
+          try {
+            await rpc("Explorer", "transferContext", [{ from: draftExplorer, to: s.sessionId }]);
+            localStorage.removeItem(draftExplorerKey);
+          } catch (_) {}
+        }
         if (state.draftPlanMode) {
           state.draftPlanMode = false;
           const updated = await rpc("LocalAgentModeSessions", "setPlanMode", [s.sessionId, true]);
@@ -5119,9 +5146,11 @@
     const host = document.getElementById("page-host");
     host.querySelector(".drawer")?.remove();
     const s = session();
-    if (!s) return;
+    if (!s && initialTab !== "explorer") return;
     if (initialTab) state.dockTab = initialTab;
-    const folder = s.cwd || currentFolder();
+    const explorerContext = s || { sessionId: explorerDraftId(), title: "New conversation" };
+    const explorerPanel = window.TsExplorerPanel?.create({ el, button, ib, icon, toast, rpc, dialog });
+    const folder = s?.cwd || currentFolder();
     const tabContent = el("div", { class: "dock-body" });
     const tabsBar = el("div", { class: "dock-tabs", role: "tablist" });
     let termTimer = null;
@@ -5133,7 +5162,7 @@
         "div",
         { class: "row" },
         el("h3", { class: "grow" }, "Files & context"),
-        ib("Close context", "close", () => { stopTermPoll(); drawer.remove(); }),
+        ib("Close context", "close", () => { stopTermPoll(); explorerPanel?.dispose(); drawer.remove(); }),
       ),
       tabsBar,
       tabContent,
@@ -5141,11 +5170,20 @@
 
     async function renderDockTab() {
       stopTermPoll();
+      if (!s && state.dockTab !== "explorer") state.dockTab = "explorer";
       tabsBar.replaceChildren(
-        ...[["files", "Files"], ["changes", "Changes"], ["terminal", "Terminal"], ["tasks", "Tasks"]].map(([id, label]) =>
+        ...[["explorer", "Explorer"], ...(s ? [["files", "Files"], ["changes", "Changes"], ["terminal", "Terminal"], ["tasks", "Tasks"]] : [])].map(([id, label]) =>
           button(label, () => { state.dockTab = id; void renderDockTab(); }, "quiet dock-tab" + (state.dockTab === id ? " active" : "")),
         ),
       );
+      if (state.dockTab === "explorer") {
+        if (!explorerPanel) {
+          tabContent.replaceChildren(el("p", { class: "muted" }, "Explorer panel is unavailable."));
+          return;
+        }
+        await explorerPanel.render(tabContent, explorerContext, { projectName: project()?.name || "No project" });
+        return;
+      }
       if (state.dockTab === "changes") {
         const wt = folder ? await rpc("LocalSessions", "getWorkingTreeStatus", [folder]) : null;
         const collab = state.collab.get(s.sessionId);

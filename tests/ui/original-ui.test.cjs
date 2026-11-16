@@ -103,6 +103,25 @@ async function fixture({
   let pythonSettings = { installer: "pip", useVenv: true };
   const rpc = async (service, member, args = []) => {
     calls.push({ service, member, args });
+    if (service === "Explorer") {
+      const sessionId = args[0]?.sessionId || "";
+      const state = {
+        version: 1,
+        sessionId,
+        preferences: { showHidden: false, showIgnored: false, extraExcludes: [], maxFileBytes: 262144, maxTotalChars: 200000 },
+        sources: [],
+        selectedFiles: 0,
+        selectedBytes: 0,
+        selectionCapped: false,
+      };
+      if (member === "getState") return state;
+      if (member === "contextPreview")
+        return { selectedFiles: 0, estimatedBytes: 0, estimatedChars: 400, budgetChars: 200000, exceedsBudget: false, capped: false, missingSources: [], sources: 0 };
+      if (member === "listDirectory") return { entries: [], truncated: false };
+      if (member === "addSource") return { ...state, sources: [{ id: "fixture-source", kind: "folder", path: args[0].path, label: "fixture-folder", projectKind: null, selected: false, selectedPaths: [], deselectedPaths: [], expanded: [], missing: false }], sourceId: "fixture-source" };
+      if (member === "setPreferences") return state;
+      return state;
+    }
     if (member === "getAll")
       return service === "LocalSessions" ? [] : structuredClone(sessions);
     if (member === "getAllSpaces") return structuredClone(projects);
@@ -378,7 +397,7 @@ async function fixture({
   for (const file of ["i18n/en.js", "i18n/pt-BR.js", "i18n/es.js", "i18n.js"]) {
     w.eval(fs.readFileSync(path.join(__dirname, "../../resources/ui", file), "utf8"));
   }
-  for (const name of ["workspace-workflows", "schedule-workflows", "capability-workflows", "chat-workflows"]) { const file=path.join(__dirname, "../../resources/ui/"+name+".js"); if(fs.existsSync(file)) w.eval(fs.readFileSync(file,"utf8")); }
+  for (const name of ["workspace-workflows", "schedule-workflows", "capability-workflows", "chat-workflows", "explorer"]) { const file=path.join(__dirname, "../../resources/ui/"+name+".js"); if(fs.existsSync(file)) w.eval(fs.readFileSync(file,"utf8")); }
   w.eval(source.replace('  function plainBody(text) {', '  window.testPlainBody = plainBody;\n  function plainBody(text) {'));
   await wait();
   const click = async (text) => {
@@ -2082,6 +2101,27 @@ test("Smart Auto safety note, Markdown conversation export, and DeepSeek Message
     assert.match(f.w.document.body.textContent, /# Existing conversation/);
     await f.click("Copy Markdown");
     assert.ok(f.calls.some(c => c.clipboard && c.clipboard.includes("# Existing conversation")));
+  } finally {
+    f.close();
+  }
+});
+
+test("Explorer opens in the chat dock and asks only for the active conversation state", async () => {
+  const f = await fixture();
+  try {
+    await f.click("Existing conversation");
+    await f.click("Explorer");
+    await wait();
+    await wait();
+    const drawer = f.w.document.querySelector(".drawer");
+    assert.ok(drawer);
+    assert.match(drawer.textContent, /EXPLORER/);
+    assert.match(drawer.textContent, /No sources yet/);
+    const stateCalls = f.calls.filter(
+      (call) => call.service === "Explorer" && call.member === "getState",
+    );
+    assert.ok(stateCalls.length > 0);
+    assert.equal(stateCalls.at(-1).args[0].sessionId, "fixture-one");
   } finally {
     f.close();
   }

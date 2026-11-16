@@ -23,6 +23,7 @@ pub struct PromptContext<'a> {
     pub capabilities: &'a str,
     pub artifact: &'a str,
     pub skills: &'a str,
+    pub selected_context: &'a str,
     pub tools_enabled: bool,
 }
 
@@ -48,6 +49,7 @@ impl PromptContext<'_> {
             ("Current capability discovery", self.capabilities),
             ("Project instructions", self.project),
             ("Selected workspace AGENTS.md instructions", self.workspace),
+            ("Explorer selection", self.selected_context),
             ("Conditional artifact guidance", self.artifact),
             ("Skill library", self.skills),
         ] {
@@ -75,6 +77,7 @@ impl PromptContext<'_> {
                 {"name":"capabilities", "included":true, "source":if self.tools_enabled {"current tool catalog and MCP registry"} else {"text-only adapter"}},
                 {"name":"project", "included":!self.project.is_empty(), "source":"selected project"},
                 {"name":"workspace", "included":!self.workspace.is_empty(), "source":"AGENTS.md"},
+                {"name":"explorer", "included":!self.selected_context.is_empty(), "source":"explicit Explorer selection for this conversation"},
                 {"name":"artifact", "included":!self.artifact.is_empty(), "reason":artifact_reason},
                 {"name":"skills", "included":!self.skills.is_empty(), "source":"skill library"}
             ],
@@ -106,6 +109,10 @@ pub fn workspace_instructions(cwd: &str) -> String {
 }
 
 pub fn text_only(cwd: &str, project: &str) -> String {
+    text_only_with_selection(cwd, project, "")
+}
+
+pub fn text_only_with_selection(cwd: &str, project: &str, selected_context: &str) -> String {
     PromptContext {
         cwd,
         project,
@@ -114,6 +121,7 @@ pub fn text_only(cwd: &str, project: &str) -> String {
         capabilities: "",
         artifact: "",
         skills: "",
+        selected_context,
         tools_enabled: false,
     }
     .render()
@@ -147,6 +155,7 @@ mod tests {
             capabilities: "ready catalog",
             artifact: "",
             skills: "",
+            selected_context: "",
             tools_enabled,
         }
     }
@@ -195,9 +204,24 @@ mod tests {
                 if enabled { "tools" } else { "text-only" }
             );
             assert!(!d.to_string().contains("Cite paths"));
+            assert_eq!(d["sections"][5]["name"], "workspace");
             assert_eq!(d["sections"][5]["included"], true);
+            assert_eq!(d["sections"][6]["name"], "explorer");
             assert_eq!(d["sections"][6]["included"], false);
         }
+    }
+    #[test]
+    fn explorer_selection_is_rendered_as_explicit_data() {
+        let mut c = context(true);
+        c.selected_context = "EXPLORER SELECTION\nFile: src/main.rs\nfn main() {}";
+        let rendered = c.render();
+        assert!(rendered.contains("Explorer selection:"));
+        assert!(rendered.contains("EXPLORER SELECTION"));
+        assert!(rendered.contains("fn main() {}"));
+        let d = c.diagnostics(1, "auto", vec![], "no intent");
+        assert_eq!(d["sections"][6]["name"], "explorer");
+        assert_eq!(d["sections"][6]["included"], true);
+        assert!(!d.to_string().contains("fn main() {}"));
     }
     #[test]
     fn text_only_does_not_claim_filesystem_access() {
