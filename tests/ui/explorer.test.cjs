@@ -496,5 +496,62 @@ test("Explorer is wired into the chat dock and shipped as its own asset", () => 
   assert.match(appSource, /\["explorer", "Explorer"\]/);
   assert.match(appSource, /explorerDraftId/);
   assert.match(appSource, /transferContext/);
+  assert.match(appSource, /sidebar-explorer/);
   assert.match(appCss, /\.explorer-panel/);
+  assert.match(appCss, /\.explorer-check\s*\{[^}]*width:\s*14px/);
+  assert.match(appCss, /\.sidebar-explorer/);
+});
+
+test("renders visible names alongside checkboxes, strips verbatim Windows prefix, shows badges and token budget", async (t) => {
+  const f = fixture();
+  t.after(() => f.panel.dispose());
+  f.states.set(
+    "session-one",
+    explorerState({
+      sources: [
+        {
+          id: "source-win",
+          kind: "folder",
+          path: "\\\\?\\D:\\Programacao\\tscdesk",
+          label: "tscdesk",
+          projectKind: "rust",
+          selected: false,
+          selectedPaths: ["index.php"],
+          deselectedPaths: [],
+          expanded: [],
+          missing: false,
+        },
+      ],
+      selectedFiles: 1,
+    }),
+  );
+  f.setPreview({
+    selectedFiles: 1,
+    includedFiles: 1,
+    omittedFiles: 0,
+    estimatedBytes: 100,
+    estimatedChars: 400,
+    estimatedTokens: 100,
+    budgetChars: 200000,
+    budgetTokens: 50000,
+    exceedsBudget: false,
+    capped: false,
+    missingSources: [],
+    sources: 1,
+  });
+  await f.panel.render(f.host, { sessionId: "session-one", title: "TSCDesk" }, { projectName: "TSCDesk" });
+  await settle();
+  const sourcePath = f.host.querySelector(".explorer-source-path");
+  assert.equal(sourcePath.textContent, "D:\\Programacao\\tscdesk");
+  assert.match(f.host.textContent, /1 file selected · 1 in prompt · ~100 \/ 50000 tokens/);
+  assert.ok(byText(f.window, ".explorer-ext-badge", "PHP"));
+  assert.ok(f.host.querySelector(".explorer-row.is-in-context .explorer-ctx-badge"));
+  const rootCaret = f.host.querySelector(".explorer-source-head .explorer-caret");
+  assert.ok(rootCaret);
+  const rootChildren = f.host.querySelector(".explorer-source > .explorer-children");
+  assert.equal(rootChildren.hidden, false);
+  rootCaret.click();
+  assert.equal(rootChildren.hidden, true);
+  rootCaret.click();
+  assert.equal(rootChildren.hidden, false);
 });

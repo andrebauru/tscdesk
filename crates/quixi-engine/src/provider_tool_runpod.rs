@@ -101,6 +101,231 @@ fn response_json(response: Response) -> Result<Value, String> {
     serde_json::from_slice(&bytes).map_err(|_| "RunPod returned invalid JSON.".into())
 }
 
+fn build_runpod_tool_prompt_section(tools: &Value) -> String {
+    let Some(items) = tools.as_array().filter(|a| !a.is_empty()) else {
+        return String::new();
+    };
+    let mut section = String::from(
+        "\n\n## RunPod / Ollama Structured Tool Calling Protocol\n\
+You have direct access to workspace tools executed by the TSCDesk engine. \
+To execute a tool, you MUST emit a `<tool_call>` block containing a valid JSON object with `\"name\"` and `\"arguments\"`:\n\
+<tool_call>\n\
+{\"name\": \"write_file\", \"arguments\": {\"path\": \"example.txt\", \"content\": \"file contents\"}}\n\
+</tool_call>\n\n\
+Mandatory execution rules:\n\
+1. NEVER write bash scripts, code examples, or hypothetical walkthroughs when asked to create, read, edit, move, delete, or list files. Emit the `<tool_call>...</tool_call>` block directly.\n\
+2. NEVER claim a file was created, read, or modified before you emit `<tool_call>` and receive the engine's `<tool_response>` with the real disk result.\n\
+3. Before calling `edit_file` (or `Edit`) on an existing file, you MUST call `read_file` (or `Read`) on that file first.\n\
+4. Emit one `<tool_call>...</tool_call>` block per step (or the immediate step's calls) and stop generating so the engine can execute the tool and return `<tool_response>`.\n\n\
+Available tools:\n",
+    );
+    for tool in items {
+        let Some(func) = tool.get("function") else {
+            continue;
+        };
+        let Some(name) = func.get("name").and_then(Value::as_str) else {
+            continue;
+        };
+        let desc = func
+            .get("description")
+            .and_then(Value::as_str)
+            .unwrap_or("");
+        let params = func.get("parameters").cloned().unwrap_or_else(|| json!({}));
+        let props = params
+            .get("properties")
+            .and_then(Value::as_object)
+            .map(|m| m.keys().cloned().collect::<Vec<_>>().join(", "))
+            .unwrap_or_default();
+        let req = params
+            .get("required")
+            .and_then(Value::as_array)
+            .map(|a| {
+                a.iter()
+                    .filter_map(Value::as_str)
+                    .collect::<Vec<_>>()
+                    .join(", ")
+            })
+            .unwrap_or_default();
+        section.push_str(&format!(
+            "- `{name}`: {desc} (args: [{props}]; required: [{req}])\n"
+        ));
+    }
+    section
+}
+
+fn split_think_and_text(raw: &str) -> (String, String) {
+    let trimmed = raw.trim();
+    if let Some(end_idx) = trimmed.find("</think>") {
+        let think_part = &trimmed[..end_idx];
+        let think_clean = think_part
+            .trim_start()
+            .strip_prefix("<think>")
+            .unwrap_or(think_part)
+            .trim()
+            .to_string();
+        let rest = trimmed[end_idx + "</think>".len()..].trim().to_string();
+        return (think_clean, rest);
+    }
+    (String::new(), raw.to_string())
+}
+
+fn normalize_tool_call_json_item(item: &Value, idx: usize) -> Option<Value> {
+    let obj = item.as_object()?;
+    let (name, raw_args) = if let Some(func) = obj.get("function").and_then(Value::as_object) {
+        let n = func.get("name").and_then(Value::as_str)?;
+        let a = func
+            .get("arguments")
+            .or_else(|| func.get("parameters"))
+            .or_else(|| func.get("input"))
+            .cloned()
+            .unwrap_or_else(|| json!({}));
+        (n, a)
+    } else {
+        let n = obj
+            .get("name")
+            .or_else(|| obj.get("tool"))
+            .and_then(Value::as_str)?;
+        let a = obj
+            .get("arguments")
+            .or_else(|| obj.get("parameters"))
+            .or_else(|| obj.get("input"))
+            .cloned()
+            .unwrap_or_else(|| json!({}));
+        (n, a)
+    };
+    let id = obj
+        .get("id")
+        .and_then(Value::as_str)
+        .map(str::to_string)
+        .unwrap_or_else(|| {
+            format!(
+                "call_rp_{idx}_{}",
+                &uuid::Uuid::new_v4().to_string().replace('-', "")[..8]
+            )
+        });
+    Some(json!({
+        "id": id,
+        "type": "function",
+        "function": {
+            "name": name,
+            "arguments": raw_args
+        }
+    }))
+}
+
+fn strip_code_fences(raw: &str) -> &str {
+    let trimmed = raw.trim();
+    if let Some(after_open) = trimmed.strip_prefix("```") {
+        let body = match after_open.find('\n') {
+            Some(nl) => &after_open[nl + 1..],
+            None => after_open,
+        };
+        return body.trim_end().strip_suffix("```").unwrap_or(body).trim();
+    }
+    trimmed
+}
+
+fn extract_structured_tool_calls_from_text(
+    raw_text: &str,
+) -> Option<(String, String, Vec<super::ProviderToolCall>)> {
+    let (thinking, visible) = split_think_and_text(raw_text);
+    let mut raw_calls = Vec::new();
+    let mut cleaned = visible.clone();
+
+    for (open_tag, close_tag) in [
+        ("<tool_call>", "</tool_call>"),
+        ("<function_call>", "</function_call>"),
+    ] {
+        let mut cursor = 0usize;
+        while let Some(rel_start) = cleaned[cursor..].find(open_tag) {
+            let start = cursor + rel_start;
+            let body_start = start + open_tag.len();
+            let (inner, remove_end) = if let Some(rel_end) = cleaned[body_start..].find(close_tag) {
+                let end = body_start + rel_end;
+                (&cleaned[body_start..end], end + close_tag.len())
+            } else {
+                (&cleaned[body_start..], cleaned.len())
+            };
+            let candidate = strip_code_fences(inner);
+            if let Ok(val) = serde_json::from_str::<Value>(candidate) {
+                let mut matched_any = false;
+                if let Some(arr) = val.as_array() {
+                    for item in arr {
+                        if let Some(norm) = normalize_tool_call_json_item(item, raw_calls.len()) {
+                            raw_calls.push(norm);
+                            matched_any = true;
+                        }
+                    }
+                } else if let Some(norm) = normalize_tool_call_json_item(&val, raw_calls.len()) {
+                    raw_calls.push(norm);
+                    matched_any = true;
+                }
+                if matched_any {
+                    cleaned.replace_range(start..remove_end, "");
+                    cursor = start;
+                    continue;
+                }
+            }
+            cursor = remove_end;
+        }
+    }
+
+    if raw_calls.is_empty() {
+        let trimmed = cleaned.trim();
+        if (trimmed.starts_with('{') && trimmed.ends_with('}'))
+            || (trimmed.starts_with('[') && trimmed.ends_with(']'))
+        {
+            let stream: Result<Vec<Value>, _> = serde_json::Deserializer::from_str(trimmed)
+                .into_iter::<Value>()
+                .collect();
+            if let Ok(values) = stream {
+                if !values.is_empty() {
+                    let mut stream_calls = Vec::new();
+                    let mut all_valid = true;
+                    for val in &values {
+                        if let Some(arr) = val.as_array() {
+                            if arr.is_empty() {
+                                all_valid = false;
+                                break;
+                            }
+                            for item in arr {
+                                if let Some(norm) =
+                                    normalize_tool_call_json_item(item, stream_calls.len())
+                                {
+                                    stream_calls.push(norm);
+                                } else {
+                                    all_valid = false;
+                                    break;
+                                }
+                            }
+                        } else if let Some(norm) =
+                            normalize_tool_call_json_item(val, stream_calls.len())
+                        {
+                            stream_calls.push(norm);
+                        } else {
+                            all_valid = false;
+                            break;
+                        }
+                    }
+                    if all_valid && !stream_calls.is_empty() {
+                        raw_calls = stream_calls;
+                        cleaned.clear();
+                    }
+                }
+            }
+        }
+    }
+
+    if raw_calls.is_empty() {
+        return None;
+    }
+    let validated = parse_structured_tool_calls(&raw_calls).ok()?;
+    if validated.is_empty() {
+        return None;
+    }
+    Some((thinking, cleaned.trim().to_string(), validated))
+}
+
 /// Monta o contrato selecionado do worker, omitindo `model` quando o endpoint o define.
 #[cfg(test)]
 fn payload(messages: &[Value], model: &str, use_endpoint_default: bool, format: &str) -> Result<Value, String> {
@@ -115,9 +340,40 @@ pub(super) fn payload_with_tools(
     format: &str,
 ) -> Result<Value, String> {
     let tools_offered = tools.as_array().is_some_and(|items| !items.is_empty());
+    let has_system_message = messages
+        .first()
+        .is_some_and(|m| m.get("role").and_then(Value::as_str) == Some("system"));
     let mut wire = Vec::new();
-    for message in messages {
+    let mut pending_ollama_tool_responses: Vec<(String, String)> = Vec::new();
+    let flush_ollama_tool_responses =
+        |wire: &mut Vec<Value>, pending: &mut Vec<(String, String)>, enabled: bool| {
+            if !enabled || pending.is_empty() {
+                pending.clear();
+                return;
+            }
+            let mut block = String::new();
+            for (id, content) in pending.drain(..) {
+                block.push_str(&format!(
+                    "<tool_response id=\"{id}\">\n{content}\n</tool_response>\n"
+                ));
+            }
+            block.push_str(
+                "Use the `<tool_response>` output above to continue. If another tool operation is required by the user's request, emit the next `<tool_call>...</tool_call>` block now; otherwise provide the final verified response.",
+            );
+            wire.push(json!({
+                "role": "user",
+                "content": block
+            }));
+        };
+    for (msg_idx, message) in messages.iter().enumerate() {
         let role = message.get("role").and_then(Value::as_str).unwrap_or("");
+        if role != "tool" {
+            flush_ollama_tool_responses(
+                &mut wire,
+                &mut pending_ollama_tool_responses,
+                tools_offered && format == FORMAT_OLLAMA && has_system_message,
+            );
+        }
         if message.get("function_call").is_some_and(|v| !v.is_null())
             || message.get("_responses_output").is_some_and(|v| !v.is_null() && v != &json!([]))
         {
@@ -139,10 +395,14 @@ pub(super) fn payload_with_tools(
         }
         match role {
             "system" | "user" => {
-                let content = message
+                let mut content = message
                     .get("content")
                     .and_then(Value::as_str)
-                    .ok_or_else(|| "RunPod adapter cannot send images or non-text message content.".to_string())?;
+                    .ok_or_else(|| "RunPod adapter cannot send images or non-text message content.".to_string())?
+                    .to_string();
+                if role == "system" && msg_idx == 0 && tools_offered && format == FORMAT_OLLAMA {
+                    content.push_str(&build_runpod_tool_prompt_section(tools));
+                }
                 wire.push(json!({"role": role, "content": content}));
             }
             "assistant" => {
@@ -152,6 +412,7 @@ pub(super) fn payload_with_tools(
                     .filter(|items| !items.is_empty())
                 {
                     let mut mapped = Vec::with_capacity(calls.len());
+                    let mut xml_synthesized = String::new();
                     for tc in calls {
                         let name = tc
                             .pointer("/function/name")
@@ -171,6 +432,10 @@ pub(super) fn payload_with_tools(
                                 Value::Object(_) => raw_args.clone(),
                                 _ => return Err("RunPod tool replay arguments must be a JSON object.".into()),
                             };
+                            xml_synthesized.push_str(&format!(
+                                "<tool_call>\n{}\n</tool_call>\n",
+                                json!({"name": name, "arguments": args_obj})
+                            ));
                             mapped.push(json!({
                                 "id": id,
                                 "type": "function",
@@ -198,11 +463,23 @@ pub(super) fn payload_with_tools(
                     }
                     let text_val = message.get("content").and_then(Value::as_str).unwrap_or("");
                     if format == FORMAT_OLLAMA {
-                        wire.push(json!({
-                            "role": "assistant",
-                            "content": text_val,
-                            "tool_calls": mapped
-                        }));
+                        if has_system_message {
+                            let replay_content = if text_val.trim().is_empty() {
+                                xml_synthesized.trim().to_string()
+                            } else {
+                                format!("{}\n{}", text_val.trim(), xml_synthesized.trim())
+                            };
+                            wire.push(json!({
+                                "role": "assistant",
+                                "content": replay_content
+                            }));
+                        } else {
+                            wire.push(json!({
+                                "role": "assistant",
+                                "content": text_val,
+                                "tool_calls": mapped
+                            }));
+                        }
                     } else {
                         wire.push(json!({
                             "role": "assistant",
@@ -228,15 +505,24 @@ pub(super) fn payload_with_tools(
                     .get("content")
                     .and_then(Value::as_str)
                     .ok_or_else(|| "RunPod tool result content must be text.".to_string())?;
-                wire.push(json!({
-                    "role": "tool",
-                    "tool_call_id": id,
-                    "content": content
-                }));
+                if format == FORMAT_OLLAMA && has_system_message {
+                    pending_ollama_tool_responses.push((id.to_string(), content.to_string()));
+                } else {
+                    wire.push(json!({
+                        "role": "tool",
+                        "tool_call_id": id,
+                        "content": content
+                    }));
+                }
             }
             _ => return Err("RunPod adapter encountered an unsupported message role.".into()),
         }
     }
+    flush_ollama_tool_responses(
+        &mut wire,
+        &mut pending_ollama_tool_responses,
+        tools_offered && format == FORMAT_OLLAMA && has_system_message,
+    );
     if wire.is_empty() {
         return Err("RunPod requires text messages.".into());
     }
@@ -328,6 +614,27 @@ pub(super) fn parse_output_with_tools(
             .and_then(|items| items[0].get("text").and_then(Value::as_str))
     });
     if let Some(texto) = texto_direto.filter(|text| !text.trim().is_empty()) {
+        if tools_offered {
+            if let Some((thinking, cleaned_text, tool_calls)) =
+                extract_structured_tool_calls_from_text(texto)
+            {
+                return Ok(ProviderToolTurn {
+                    response_items: Vec::new(),
+                    text: cleaned_text,
+                    thinking,
+                    reasoning_details: None,
+                    tool_calls,
+                    provider_name: "RunPod Serverless".into(),
+                    model_id: model.into(),
+                    requested_model: model.into(),
+                    effective_model: None,
+                    cost_usd: None,
+                    attempts: 1,
+                    stream_error: None,
+                    usage: None,
+                });
+            }
+        }
         return Ok(ProviderToolTurn {
             response_items: Vec::new(), text: texto.into(), thinking: String::new(),
             reasoning_details: None, tool_calls: Vec::new(), provider_name: "RunPod Serverless".into(),
@@ -380,18 +687,41 @@ pub(super) fn parse_output_with_tools(
             if ollama.get("done").and_then(Value::as_bool) != Some(true) {
                 return Err("RunPod Ollama worker returned an incomplete response.".into());
             }
+            let usage = Some(ProviderTokenUsage {
+                input_tokens: ollama.get("prompt_eval_count").and_then(Value::as_u64).unwrap_or(0),
+                output_tokens: ollama.get("eval_count").and_then(Value::as_u64).unwrap_or(0),
+                cache_read_tokens: 0,
+                ..ProviderTokenUsage::default()
+            });
+            let effective_model = ollama.get("model").and_then(Value::as_str).map(str::to_string);
+            if tools_offered {
+                if let Some((thinking, cleaned_text, tool_calls)) =
+                    extract_structured_tool_calls_from_text(text)
+                {
+                    return Ok(ProviderToolTurn {
+                        response_items: Vec::new(),
+                        text: cleaned_text,
+                        thinking,
+                        reasoning_details: None,
+                        tool_calls,
+                        provider_name: "RunPod Serverless".into(),
+                        model_id: model.into(),
+                        requested_model: model.into(),
+                        effective_model,
+                        cost_usd: None,
+                        attempts: 1,
+                        stream_error: None,
+                        usage,
+                    });
+                }
+            }
             return Ok(ProviderToolTurn {
                 response_items: Vec::new(), text: text.into(), thinking: String::new(),
                 reasoning_details: None, tool_calls: Vec::new(), provider_name: "RunPod Serverless".into(),
                 model_id: model.into(), requested_model: model.into(),
-                effective_model: ollama.get("model").and_then(Value::as_str).map(str::to_string),
+                effective_model,
                 cost_usd: None, attempts: 1, stream_error: None,
-                usage: Some(ProviderTokenUsage {
-                    input_tokens: ollama.get("prompt_eval_count").and_then(Value::as_u64).unwrap_or(0),
-                    output_tokens: ollama.get("eval_count").and_then(Value::as_u64).unwrap_or(0),
-                    cache_read_tokens: 0,
-                    ..ProviderTokenUsage::default()
-                }),
+                usage,
             });
         }
     }
@@ -414,6 +744,12 @@ pub(super) fn parse_output_with_tools(
     if message.get("function_call").is_some_and(|v| !v.is_null()) {
         return Err("RunPod worker requested unsupported actions; no tools were executed.".into());
     }
+    let effective_model = completion
+        .get("model")
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+        .map(str::to_string);
     let has_tool_calls = message.get("tool_calls").is_some_and(|v| !v.is_null() && v != &json!([]))
         || choice.get("finish_reason").and_then(Value::as_str) == Some("tool_calls");
     if has_tool_calls {
@@ -448,7 +784,7 @@ pub(super) fn parse_output_with_tools(
             provider_name: "RunPod Serverless".into(),
             model_id: model.into(),
             requested_model: model.into(),
-            effective_model: None,
+            effective_model,
             cost_usd: None,
             attempts: 1,
             stream_error: None,
@@ -465,10 +801,31 @@ pub(super) fn parse_output_with_tools(
         output_tokens: u.get("completion_tokens")?.as_u64()?,
         ..Default::default()
     }));
+    if tools_offered {
+        if let Some((thinking, cleaned_text, tool_calls)) =
+            extract_structured_tool_calls_from_text(text)
+        {
+            return Ok(ProviderToolTurn {
+                response_items: Vec::new(),
+                text: cleaned_text,
+                thinking,
+                reasoning_details: None,
+                tool_calls,
+                provider_name: "RunPod Serverless".into(),
+                model_id: model.into(),
+                requested_model: model.into(),
+                effective_model,
+                cost_usd: None,
+                attempts: 1,
+                stream_error: None,
+                usage,
+            });
+        }
+    }
     Ok(ProviderToolTurn {
         response_items: Vec::new(), text: text.into(), thinking: String::new(),
         reasoning_details: None, tool_calls: Vec::new(), provider_name: "RunPod Serverless".into(),
-        model_id: model.into(), requested_model: model.into(), effective_model: None,
+        model_id: model.into(), requested_model: model.into(), effective_model,
         cost_usd: None, attempts: 1, stream_error: None, usage,
     })
 }
@@ -540,7 +897,17 @@ pub(super) fn infer_with_tools<F: FnMut(StreamChunk)>(
     let request = control.start_request().map_err(|_| CANCELLED.to_string())?;
     validate_config(endpoint, key, model, use_endpoint_default)?;
     let tools_offered = tools.as_array().is_some_and(|items| !items.is_empty());
+    let tools_count = tools.as_array().map(Vec::len).unwrap_or(0);
     let body = payload_with_tools(messages, tools, model, use_endpoint_default, format)?;
+    tracing::info!(
+        model = %model,
+        use_endpoint_default,
+        format = %format,
+        tools_offered,
+        tools_count,
+        messages_count = messages.len(),
+        "runpod: submitting job to /run"
+    );
     let http = transport.client()?;
     let deadline = Instant::now() + transport.timeout;
     stopped(&request)?;
@@ -583,10 +950,22 @@ pub(super) fn infer_with_tools<F: FnMut(StreamChunk)>(
                 let mut turn = parse_output_with_tools(&status["output"], model, tools_offered)?;
                 // Even a successful, malicious upstream answer must not echo the HTTP credential.
                 turn.text = turn.text.replace(key, "[credential redacted]");
+                turn.thinking = turn.thinking.replace(key, "[credential redacted]");
                 for call in &mut turn.tool_calls {
                     call.arguments = call.arguments.replace(key, "[credential redacted]");
                 }
+                tracing::info!(
+                    job_id = %job.id,
+                    effective_model = ?turn.effective_model,
+                    tool_calls_count = turn.tool_calls.len(),
+                    text_len = turn.text.len(),
+                    thinking_len = turn.thinking.len(),
+                    "runpod: job completed and parsed"
+                );
                 stopped(&request)?;
+                if !turn.thinking.is_empty() {
+                    on_chunk(StreamChunk::Thinking(turn.thinking.clone()));
+                }
                 // Emit complete text answer when non-empty.
                 if !turn.text.is_empty() {
                     on_chunk(StreamChunk::Text(turn.text.clone()));
@@ -1207,5 +1586,324 @@ mod tests {
         assert_eq!(sent[1].1["input"]["messages"][2]["role"], "tool");
         // In FORMAT_OLLAMA, assistant tool_calls arguments are replayed as a JSON object:
         assert!(sent[1].1["input"]["messages"][1]["tool_calls"][0]["function"]["arguments"].is_object());
+    }
+
+    #[test]
+    fn runpod_xml_tool_call_four_step_write_read_edit_read_workflow() {
+        let tools = crate::agent_tools::tool_schemas();
+        let ws = tempfile::tempdir().unwrap();
+        let ws_str = ws.path().to_str().unwrap();
+        let host = quixi_mcp::McpHost::new();
+
+        // Simulate a DeepSeek-R1 / Ollama worker whose template ignores native `tools`
+        // and emits `<think>...</think>\n<tool_call>...</tool_call>` inside `message.content`.
+        let step1_write = json!({
+            "model": "huihui_ai/deepseek-r1-abliterated:14",
+            "message": {
+                "role": "assistant",
+                "content": "<think>Vou criar TESTE_RUNPOD.txt usando write_file.</think>\n<tool_call>\n{\"name\": \"write_file\", \"arguments\": {\"path\": \"TESTE_RUNPOD.txt\", \"content\": \"RUNPOD EXECUTOU A ESCRITA COM SUCESSO\\nLINHA ORIGINAL\"}}\n</tool_call>"
+            },
+            "done": true,
+            "prompt_eval_count": 512,
+            "eval_count": 48
+        });
+        let step2_read = json!({
+            "model": "huihui_ai/deepseek-r1-abliterated:14",
+            "message": {
+                "role": "assistant",
+                "content": "<think>Agora vou ler TESTE_RUNPOD.txt com read_file.</think>\n<tool_call>\n{\"name\": \"read_file\", \"arguments\": {\"path\": \"TESTE_RUNPOD.txt\"}}\n</tool_call>"
+            },
+            "done": true,
+            "prompt_eval_count": 620,
+            "eval_count": 35
+        });
+        let step3_edit = json!({
+            "model": "huihui_ai/deepseek-r1-abliterated:14",
+            "message": {
+                "role": "assistant",
+                "content": "<think>Agora vou editar TESTE_RUNPOD.txt com edit_file.</think>\n<tool_call>\n{\"name\": \"edit_file\", \"arguments\": {\"path\": \"TESTE_RUNPOD.txt\", \"old_string\": \"LINHA ORIGINAL\", \"new_string\": \"LINHA EDITADA PELO RUNPOD\"}}\n</tool_call>"
+            },
+            "done": true,
+            "prompt_eval_count": 710,
+            "eval_count": 44
+        });
+        let step4_read = json!({
+            "model": "huihui_ai/deepseek-r1-abliterated:14",
+            "message": {
+                "role": "assistant",
+                "content": "<think>Confirmando a edição com nova leitura.</think>\n<tool_call>\n{\"name\": \"read_file\", \"arguments\": {\"path\": \"TESTE_RUNPOD.txt\"}}\n</tool_call>"
+            },
+            "done": true,
+            "prompt_eval_count": 810,
+            "eval_count": 32
+        });
+        let step5_done = json!({
+            "model": "huihui_ai/deepseek-r1-abliterated:14",
+            "message": {
+                "role": "assistant",
+                "content": "<think>Todas as 4 operações concluídas.</think>\nOperações concluídas: write_file, read_file, edit_file e read_file executadas com sucesso em TESTE_RUNPOD.txt."
+            },
+            "done": true,
+            "prompt_eval_count": 900,
+            "eval_count": 28
+        });
+
+        let (address, requests, server) = fixture(vec![
+            reply("POST /v2/fixture_123/run HTTP/1.1", json!({"id":"job-s1","status":"COMPLETED","output":step1_write})),
+            reply("POST /v2/fixture_123/run HTTP/1.1", json!({"id":"job-s2","status":"COMPLETED","output":step2_read})),
+            reply("POST /v2/fixture_123/run HTTP/1.1", json!({"id":"job-s3","status":"COMPLETED","output":step3_edit})),
+            reply("POST /v2/fixture_123/run HTTP/1.1", json!({"id":"job-s4","status":"COMPLETED","output":step4_read})),
+            reply("POST /v2/fixture_123/run HTTP/1.1", json!({"id":"job-s5","status":"COMPLETED","output":step5_done})),
+        ]);
+
+        let (control, _profile) = control();
+        let transport = Transport::loopback(address, Duration::from_secs(2));
+        let mut history = vec![
+            json!({"role": "system", "content": "You are TSCDesk."}),
+            json!({"role": "user", "content": "Crie, leia, edite e releia TESTE_RUNPOD.txt"}),
+        ];
+
+        for expected_tool in ["write_file", "read_file", "edit_file", "read_file"] {
+            let mut chunks = Vec::new();
+            let turn = infer_with_tools(
+                &control,
+                &transport,
+                ENDPOINT,
+                KEY,
+                &history,
+                &tools,
+                DEFAULT_MODEL,
+                true,
+                FORMAT_OLLAMA,
+                &mut |c| chunks.push(c),
+            )
+            .unwrap();
+            assert_eq!(turn.tool_calls.len(), 1);
+            assert_eq!(turn.tool_calls[0].name, expected_tool);
+            assert!(!turn.thinking.is_empty());
+
+            let args_val: Value = serde_json::from_str(&turn.tool_calls[0].arguments).unwrap();
+            let (exec_out, exec_err) = crate::agent_tools::execute(
+                &turn.tool_calls[0].name,
+                &args_val,
+                ws_str,
+                "auto",
+                &host,
+            );
+            assert!(!exec_err, "Tool {expected_tool} failed: {exec_out}");
+
+            history.push(json!({
+                "role": "assistant",
+                "content": turn.text,
+                "tool_calls": [{
+                    "id": turn.tool_calls[0].id,
+                    "type": "function",
+                    "function": {
+                        "name": turn.tool_calls[0].name,
+                        "arguments": turn.tool_calls[0].arguments
+                    }
+                }]
+            }));
+            history.push(json!({
+                "role": "tool",
+                "tool_call_id": turn.tool_calls[0].id,
+                "content": exec_out
+            }));
+        }
+
+        let mut chunks = Vec::new();
+        let final_turn = infer_with_tools(
+            &control,
+            &transport,
+            ENDPOINT,
+            KEY,
+            &history,
+            &tools,
+            DEFAULT_MODEL,
+            true,
+            FORMAT_OLLAMA,
+            &mut |c| chunks.push(c),
+        )
+        .unwrap();
+        server.join().unwrap();
+
+        assert!(final_turn.tool_calls.is_empty());
+        assert!(final_turn.text.contains("TESTE_RUNPOD.txt"));
+        let disk_content = std::fs::read_to_string(ws.path().join("TESTE_RUNPOD.txt")).unwrap();
+        assert_eq!(
+            disk_content,
+            "RUNPOD EXECUTOU A ESCRITA COM SUCESSO\nLINHA EDITADA PELO RUNPOD"
+        );
+
+        let sent = requests.lock().unwrap();
+        assert_eq!(sent.len(), 5);
+        // System prompt in Round 1 contains the structured <tool_call> protocol:
+        let sys_msg = sent[0].1["input"]["messages"][0]["content"].as_str().unwrap();
+        assert!(sys_msg.contains("<tool_call>"));
+        // Round 2 includes <tool_response> user turn for Ollama templates that ignore role="tool":
+        let r2_msgs = sent[1].1["input"]["messages"].as_array().unwrap();
+        assert!(r2_msgs.last().unwrap()["content"].as_str().unwrap().contains("<tool_response"));
+    }
+
+    #[test]
+    fn live_runpod_endpoint_four_step_tool_execution_verification() {
+        if std::env::var("QUIXI_LIVE_RUNPOD_TEST").ok().as_deref() != Some("1") {
+            return;
+        }
+        let config_path = quixi_proto::paths::home_dir()
+            .join(".quixi")
+            .join("providers.json");
+        if !config_path.exists() {
+            println!("LIVE_RUNPOD_STATUS: NÃO VALIDADO (providers.json ausente)");
+            return;
+        }
+        let Some(merged) = std::fs::read_to_string(&config_path)
+            .ok()
+            .and_then(|s| serde_json::from_str::<Value>(&s).ok())
+            .and_then(|val| crate::credentials::open_readonly_os_vault(&config_path, val).ok())
+            .and_then(|val| ProviderManager::merge_saved_state(ProviderManager::default_catalog(), &val))
+        else {
+            println!("LIVE_RUNPOD_STATUS: NÃO VALIDADO (credenciais não puderam ser abertas sem cofre ativo)");
+            return;
+        };
+        let Some(entry) = merged.providers.into_iter().find(|p| p.id == "runpod-ollama") else {
+            println!("LIVE_RUNPOD_STATUS: NÃO VALIDADO (runpod-ollama ausente)");
+            return;
+        };
+        let configured = entry.configured;
+        let endpoint_id = entry.endpoint_id;
+        let api_key = entry.api_key_raw;
+        let selected_model = if entry.selected_model.trim().is_empty() {
+            DEFAULT_MODEL.to_string()
+        } else {
+            entry.selected_model
+        };
+        let api_format = entry.api_format;
+        if !configured || endpoint_id.trim().is_empty() || api_key.trim().is_empty() {
+            println!(
+                "LIVE_RUNPOD_STATUS: NÃO VALIDADO (configured={}, endpoint_len={}, key_len={})",
+                configured,
+                endpoint_id.len(),
+                api_key.len()
+            );
+            return;
+        }
+        let use_default = selected_model == DEFAULT_MODEL;
+        let (control, _profile) = control();
+        let transport = Transport::production();
+        if let Err(err) = health(&control, &transport, &endpoint_id, &api_key) {
+            println!("LIVE_RUNPOD_STATUS: NÃO VALIDADO (health check error: {err})");
+            return;
+        }
+        println!(
+            "LIVE_RUNPOD_HEALTH: OK (model={}, use_default={}, format={})",
+            selected_model, use_default, api_format
+        );
+
+        let ws = tempfile::tempdir().unwrap();
+        let ws_str = ws.path().to_str().unwrap();
+        let host = quixi_mcp::McpHost::new();
+        let tools = crate::agent_tools::tool_schemas();
+        let mut history = vec![
+            json!({
+                "role": "system",
+                "content": format!("You are TSCDesk. Active workspace: {ws_str}. Execute the requested file tools step by step using `<tool_call>` JSON blocks.")
+            }),
+            json!({
+                "role": "user",
+                "content": "Execute as 4 ferramentas em sequência no arquivo `TESTE_RUNPOD.txt`:\n1. Use `write_file` para criar `TESTE_RUNPOD.txt` com o conteúdo exato `RUNPOD EXECUTOU A ESCRITA COM SUCESSO\\nLINHA 2 ORIGINAL`.\n2. Use `read_file` para ler `TESTE_RUNPOD.txt`.\n3. Use `edit_file` em `TESTE_RUNPOD.txt` substituindo `LINHA 2 ORIGINAL` por `LINHA 2 EDITADA PELO RUNPOD`.\n4. Use `read_file` novamente em `TESTE_RUNPOD.txt` para confirmar a alteração.\nEmita o primeiro `<tool_call>` agora."
+            }),
+        ];
+
+        let mut executed_calls = Vec::new();
+        for round in 1..=6 {
+            let mut chunks = Vec::new();
+            let turn = match infer_with_tools(
+                &control,
+                &transport,
+                &endpoint_id,
+                &api_key,
+                &history,
+                &tools,
+                &selected_model,
+                use_default,
+                &api_format,
+                &mut |c| chunks.push(c),
+            ) {
+                Ok(t) => t,
+                Err(err) => {
+                    println!("LIVE_RUNPOD_ROUND_{round}_ERR: {err}");
+                    return;
+                }
+            };
+            println!(
+                "LIVE_RUNPOD_ROUND_{round}: effective_model={:?}, tool_calls={}, thinking_len={}, text_preview={:?}",
+                turn.effective_model,
+                turn.tool_calls.len(),
+                turn.thinking.len(),
+                turn.text.chars().take(160).collect::<String>()
+            );
+            if turn.tool_calls.is_empty() {
+                if executed_calls.len() < 4 {
+                    history.push(json!({"role": "assistant", "content": turn.text}));
+                    history.push(json!({
+                        "role": "user",
+                        "content": "Emita o próximo `<tool_call>{\"name\": \"...\", \"arguments\": {...}}</tool_call>` para concluir as 4 etapas obrigatórias (`write_file`, `read_file`, `edit_file`, `read_file`) em `TESTE_RUNPOD.txt`."
+                    }));
+                    continue;
+                }
+                break;
+            }
+            let mut tc_json = Vec::new();
+            let mut tr_json = Vec::new();
+            for call in &turn.tool_calls {
+                let args_val: Value = serde_json::from_str(&call.arguments).unwrap_or_else(|_| json!({}));
+                let (exec_out, exec_err) = crate::agent_tools::execute(
+                    &call.name,
+                    &args_val,
+                    ws_str,
+                    "auto",
+                    &host,
+                );
+                println!(
+                    "LIVE_RUNPOD_EXEC: tool={} args={} err={} out={:?}",
+                    call.name, call.arguments, exec_err, exec_out
+                );
+                executed_calls.push((call.name.clone(), exec_err, exec_out.clone()));
+                tc_json.push(json!({
+                    "id": call.id,
+                    "type": "function",
+                    "function": {
+                        "name": call.name,
+                        "arguments": call.arguments
+                    }
+                }));
+                tr_json.push(json!({
+                    "role": "tool",
+                    "tool_call_id": call.id,
+                    "content": exec_out
+                }));
+            }
+            history.push(json!({
+                "role": "assistant",
+                "content": turn.text,
+                "tool_calls": tc_json
+            }));
+            history.extend(tr_json);
+            if executed_calls.len() >= 4
+                && ws.path().join("TESTE_RUNPOD.txt").exists()
+                && std::fs::read_to_string(ws.path().join("TESTE_RUNPOD.txt"))
+                    .unwrap_or_default()
+                    .contains("EDITADA")
+            {
+                break;
+            }
+        }
+        let final_disk = std::fs::read_to_string(ws.path().join("TESTE_RUNPOD.txt")).unwrap_or_default();
+        println!(
+            "LIVE_RUNPOD_SUMMARY: executed_calls={:?}, final_disk={:?}",
+            executed_calls.iter().map(|(n, e, _)| (n, e)).collect::<Vec<_>>(),
+            final_disk
+        );
     }
 }

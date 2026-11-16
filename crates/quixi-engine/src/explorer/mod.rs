@@ -260,10 +260,12 @@ impl ExplorerStore {
 
     fn source_json(&self, source: &ExplorerSource) -> Value {
         let missing = source.missing || !Path::new(&source.path).exists();
+        let display_path = clean_display_path(&source.path);
         json!({
             "id": source.id,
             "kind": source.kind,
-            "path": source.path,
+            "path": display_path,
+            "rawPath": source.path,
             "label": source.label,
             "projectKind": source.project_kind,
             "selected": source.selected,
@@ -725,23 +727,47 @@ impl ExplorerStore {
             .iter()
             .map(|file| (file.size as usize).min(state.preferences.max_file_bytes as usize))
             .sum();
-        let overhead_chars: usize = selected
-            .iter()
-            .map(|file| file.relative_path.chars().count() + 12)
-            .sum::<usize>()
-            + 400;
+        let overhead_chars: usize = if selected.is_empty() {
+            0
+        } else {
+            selected
+                .iter()
+                .map(|file| file.relative_path.chars().count() + 12)
+                .sum::<usize>()
+                + 400
+        };
         let estimated_chars = content_chars.saturating_add(overhead_chars);
+        let mut running_chars = if selected.is_empty() { 0usize } else { 400usize };
+        let mut included_files = 0usize;
+        for file in &selected {
+            if running_chars >= budget {
+                break;
+            }
+            let file_chars = (file.size as usize)
+                .min(state.preferences.max_file_bytes as usize)
+                .saturating_add(file.relative_path.chars().count() + 24);
+            running_chars = running_chars.saturating_add(file_chars);
+            included_files += 1;
+        }
+        let omitted_files = selected.len().saturating_sub(included_files);
+        let included_chars = running_chars.min(budget);
         let missing: Vec<_> = session
             .sources
             .iter()
             .filter(|source| !Path::new(&source.path).exists())
-            .map(|source| source.path.clone())
+            .map(|source| clean_display_path(&source.path))
             .collect();
         json!({
             "selectedFiles": selected.len(),
+            "includedFiles": included_files,
+            "omittedFiles": omitted_files,
             "estimatedBytes": selected.iter().map(|file| file.size).sum::<u64>(),
             "estimatedChars": estimated_chars,
+            "estimatedTokens": (estimated_chars + 3) / 4,
+            "includedChars": included_chars,
+            "includedTokens": (included_chars + 3) / 4,
             "budgetChars": budget,
+            "budgetTokens": (budget + 3) / 4,
             "exceedsBudget": estimated_chars > budget,
             "capped": capped,
             "missingSources": missing,
@@ -1051,11 +1077,22 @@ fn apply_file_selection(
     Ok(())
 }
 
+fn clean_display_path(raw: &str) -> String {
+    if let Some(stripped) = raw.strip_prefix(r"\\?\UNC\") {
+        return format!(r"\\{stripped}");
+    }
+    if let Some(stripped) = raw.strip_prefix(r"\\?\") {
+        return stripped.to_string();
+    }
+    raw.to_string()
+}
+
 fn display_path(source: &ExplorerSource, relative: &str) -> String {
+    let base = clean_display_path(&source.path);
     if source.kind == "file" || relative.is_empty() {
-        source.path.clone()
+        base
     } else {
-        format!("{}/{}", source.path.trim_end_matches(['/', '\\']), relative)
+        format!("{}/{}", base.trim_end_matches(['/', '\\']), relative)
     }
 }
 

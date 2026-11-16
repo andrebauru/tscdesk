@@ -2955,6 +2955,24 @@ impl QuixiEngine {
         PATTERNS.iter().any(|p| lower.contains(p))
     }
 
+    fn mentions_uncalled_tool_names(prompt: &str, reply: &str) -> bool {
+        let p = prompt.to_lowercase();
+        let r = reply.to_lowercase();
+        const TOOL_NAMES: &[&str] = &[
+            "write_file",
+            "read_file",
+            "edit_file",
+            "list_directory",
+            "apply_patch",
+            "create_directory",
+            "move_file",
+            "delete_file",
+            "run_command",
+            "search_files",
+        ];
+        TOOL_NAMES.iter().any(|t| p.contains(t) || r.contains(t))
+    }
+
     /// Runs a full agent turn: the model may call tools (Bash / Read / Write / Edit /
     /// WebFetch / McpCall), we execute them locally and feed the results back, up to
     /// `max_rounds` times. Every tool_use and tool_result is handed to `on_message` so the
@@ -3387,6 +3405,32 @@ impl QuixiEngine {
             }
 
             if turn.tool_calls.is_empty() {
+                if round == 0
+                    && !used_tools
+                    && tools_enabled
+                    && !cwd.trim().is_empty()
+                    && !collab_snapshot.plan_mode.active
+                    && turn.provider_name == "RunPod Serverless"
+                    && turn.stream_error.is_none()
+                    && !turn.text.trim().is_empty()
+                    && (Self::claims_unverified_file_mutation(&turn.text)
+                        || Self::mentions_uncalled_tool_names(prompt, &turn.text))
+                {
+                    tracing::info!(
+                        session_id,
+                        "runpod: round 0 returned prose without structured tool_calls; nudging model to emit <tool_call>"
+                    );
+                    self.clear_partial_reply(session_id, cancelled);
+                    messages.push(json!({
+                        "role": "assistant",
+                        "content": turn.text
+                    }));
+                    messages.push(json!({
+                        "role": "user",
+                        "content": "You responded with text/examples instead of a structured tool call, so NO tool was executed on disk. Emit ONLY the structured `<tool_call>{\"name\": \"...\", \"arguments\": {...}}</tool_call>` JSON block now so the engine can execute the requested operation physically."
+                    }));
+                    continue;
+                }
                 if !streamed_text && !turn.text.is_empty() { self.record_partial_reply(session_id,cancelled,&turn.text);on_chunk(StreamChunk::Text(turn.text.clone())); }
                 let steering = self.take_steering(session_id);
                 if !steering.is_empty() {

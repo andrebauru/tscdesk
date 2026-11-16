@@ -5,6 +5,19 @@
 
   const SIZE_UNITS = ["B", "KB", "MB", "GB"];
 
+  function cleanPath(value) {
+    return String(value || "").replace(/^\\\\\?\\/, "");
+  }
+
+  function extBadge(name, isDir) {
+    if (isDir) return null;
+    const base = String(name || "");
+    const dot = base.lastIndexOf(".");
+    if (dot <= 0 || dot === base.length - 1) return null;
+    const ext = base.slice(dot + 1).slice(0, 5).toUpperCase();
+    return ext ? ext : null;
+  }
+
   function formatBytes(bytes) {
     let value = Number(bytes) || 0;
     let unit = 0;
@@ -24,6 +37,8 @@
     let preview = null;
     let host = null;
     let projectName = "No project";
+    let workspaceFolders = [];
+    let compactMode = false;
     let timer = null;
     let menu = null;
 
@@ -162,10 +177,28 @@
         { class: "explorer-name", title: entry.relativePath },
         entry.name,
       );
+      const ext = extBadge(entry.name, isDir);
+      const extPill = ext
+        ? el("span", { class: "explorer-ext-badge" }, ext)
+        : null;
+      const ctxPill = entry.checked
+        ? el(
+            "span",
+            {
+              class: "explorer-ctx-badge",
+              title: "Included in AI context",
+            },
+            "CTX",
+          )
+        : null;
       const row = el(
         "div",
         {
-          class: "explorer-row" + (isDir ? " is-dir" : ""),
+          class:
+            "explorer-row" +
+            (isDir ? " is-dir" : "") +
+            (entry.checked ? " is-in-context" : "") +
+            (entry.partial ? " is-partial-context" : ""),
           style: `--depth:${depth}`,
           onContextmenu: (event) =>
             showMenu(event, [
@@ -252,7 +285,9 @@
         ),
         caret,
         icon(isDir ? "folder" : "file", 14),
+        extPill,
         name,
+        ctxPill,
         isDir ? null : el("small", { class: "explorer-size" }, formatBytes(entry.size)),
       );
 
@@ -326,14 +361,48 @@
     const renderSource = (source) => {
       const [checked, partial] = sourceSelection(source);
       const rootChildren = el("div", { class: "explorer-children" });
+      const cleanSourcePath = cleanPath(source.path);
       const badge = source.projectKind
         ? el("span", { class: "explorer-badge" }, source.projectKind)
-        : null;
+        : el(
+            "span",
+            { class: "explorer-badge" },
+            source.kind === "file" ? "file" : "root",
+          );
+      const ctxBadge = checked
+        ? el(
+            "span",
+            { class: "explorer-ctx-badge", title: "All files in context" },
+            "CTX",
+          )
+        : partial
+          ? el(
+              "span",
+              { class: "explorer-ctx-badge", title: "Selected files in context" },
+              "CTX",
+            )
+          : null;
+      const rootCaret =
+        source.kind === "folder"
+          ? button(
+              "",
+              () => {
+                const expanded = rootChildren.hidden;
+                rootChildren.hidden = !expanded;
+                rootCaret.classList.toggle("is-open", expanded);
+              },
+              "quiet explorer-caret is-open",
+              "arrow",
+            )
+          : null;
       const card = el(
         "div",
         {
           class:
-            "explorer-source" + (source.missing ? " is-missing" : ""),
+            "explorer-source" +
+            (source.missing ? " is-missing" : "") +
+            (checked ? " is-in-context" : "") +
+            (partial ? " is-partial-context" : ""),
           onContextmenu: (event) =>
             showMenu(event, [
               [
@@ -366,6 +435,7 @@
               selected,
             }),
           ),
+          rootCaret,
           icon(source.kind === "file" ? "file" : "folder", 15),
           el(
             "div",
@@ -375,15 +445,16 @@
               { class: "row explorer-source-title" },
               el(
                 "span",
-                { class: "explorer-source-label", title: source.path },
+                { class: "explorer-source-label", title: cleanSourcePath },
                 source.label,
               ),
               badge,
+              ctxBadge,
             ),
             el(
               "small",
-              { class: "path explorer-source-path", title: source.path },
-              source.path,
+              { class: "path explorer-source-path", title: cleanSourcePath },
+              cleanSourcePath,
             ),
           ),
           ib("Refresh source", "refresh", () =>
@@ -409,6 +480,9 @@
       );
 
       if (source.kind === "folder" && !source.missing) {
+        card
+          .querySelector(".explorer-source-label")
+          ?.addEventListener("click", () => rootCaret?.click());
         void loadChildren(source, "", rootChildren);
       } else if (source.kind === "file" && !source.missing) {
         card
@@ -426,10 +500,11 @@
       const toolbar = el(
         "div",
         { class: "explorer-toolbar" },
-        button("Add folder", addFolder, "quiet", "folder"),
-        button("Add files", addFiles, "quiet", "file"),
+        button("Open Folder", addFolder, "quiet", "folder"),
+        compactMode ? null : button("Add folder", addFolder, "quiet", "folder"),
+        button(compactMode ? "Select files" : "Add files", addFiles, "quiet", "file"),
         button("Refresh", () => reload(), "quiet", "refresh"),
-        button("Select all", () => mutate("selectAll", { selected: true }), "quiet", "check"),
+        compactMode ? null : button("Select all", () => mutate("selectAll", { selected: true }), "quiet", "check"),
         button("Clear", () => mutate("selectAll", { selected: false }), "quiet", "close"),
       );
       const preferences = el(
@@ -477,13 +552,23 @@
             }),
         }),
       );
+      const selectedCount = data.selectedFiles || 0;
+      const estTokens =
+        preview?.estimatedTokens ??
+        Math.ceil((preview?.estimatedChars || 0) / 4);
+      const budgetTokens =
+        preview?.budgetTokens ??
+        Math.ceil((preview?.budgetChars || 200000) / 4);
+      const includedFiles =
+        preview?.includedFiles ?? (preview?.selectedFiles ?? selectedCount);
+      const omittedFiles = preview?.omittedFiles ?? 0;
       const summary = el(
         "div",
         { class: "explorer-summary" },
         el(
           "span",
           { class: "explorer-count" },
-          `${data.selectedFiles || 0} file${data.selectedFiles === 1 ? "" : "s"} selected`,
+          `${selectedCount} file${selectedCount === 1 ? "" : "s"} selected · ${includedFiles} in prompt · ~${estTokens} / ${budgetTokens} tokens`,
         ),
         el("small", { class: "hint" }, `Context: ${projectName} · ${session.title || "Untitled"}`),
       );
@@ -495,7 +580,7 @@
       }
       if (preview?.exceedsBudget) {
         warnings.push(
-          `Estimated context exceeds the budget (${preview.estimatedChars} of ${preview.budgetChars} chars). Files will be truncated.`,
+          `Estimated context exceeds the budget (${preview.estimatedChars} of ${preview.budgetChars} chars · ~${estTokens} / ${budgetTokens} tokens; ${includedFiles} included, ${omittedFiles} omitted). Files will be truncated. Uncheck the root folder to select individual files.`,
         );
       }
       if (preview?.missingSources?.length) {
@@ -519,6 +604,19 @@
                   { class: "hint" },
                   "Add a folder or individual files. Each source stays independent and is only shared when you select it for this conversation.",
                 ),
+                workspaceFolders.length
+                  ? button(
+                      "Open workspace folder",
+                      async () => {
+                        for (const folderPath of workspaceFolders) {
+                          if (!folderPath) continue;
+                          await mutate("addSource", { path: folderPath });
+                        }
+                      },
+                      "quiet",
+                      "folder",
+                    )
+                  : null,
               ),
             ]),
       );
@@ -572,9 +670,16 @@
       try {
         await refreshPreview();
         const info = preview || {};
+        const estTokens =
+          info.estimatedTokens ?? Math.ceil((info.estimatedChars || 0) / 4);
+        const budgetTokens =
+          info.budgetTokens ?? Math.ceil((info.budgetChars || 200000) / 4);
+        const includedFiles =
+          info.includedFiles ?? (info.selectedFiles || 0);
+        const omittedFiles = info.omittedFiles ?? 0;
         const lines = [
-          `${info.selectedFiles || 0} file(s) · ${formatBytes(info.estimatedBytes || 0)} · ~${info.estimatedChars || 0} chars`,
-          `Budget: ${info.budgetChars || 0} chars`,
+          `${info.selectedFiles || 0} file(s) selected (${includedFiles} included in prompt${omittedFiles ? `, ${omittedFiles} omitted` : ""}) · ${formatBytes(info.estimatedBytes || 0)} · ~${info.estimatedChars || 0} chars (~${estTokens} tokens)`,
+          `Budget: ${info.budgetChars || 0} chars (~${budgetTokens} tokens)`,
           info.capped
             ? "The selection walk hit its safety cap; some files may be omitted."
             : null,
@@ -630,6 +735,10 @@
         host = target;
         session = currentSession;
         projectName = meta.projectName || "No project";
+        compactMode = Boolean(meta.compact);
+        workspaceFolders = Array.isArray(meta.workspaceFolders)
+          ? meta.workspaceFolders.filter(Boolean)
+          : [];
         host.replaceChildren(
           el("p", { class: "muted" }, "Loading Explorer…"),
         );

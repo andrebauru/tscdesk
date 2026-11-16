@@ -422,6 +422,40 @@ pub(crate) fn open(path: &Path, mut document: Value) -> Result<Value, String> {
     }
     Ok(document)
 }
+
+#[cfg(test)]
+pub(crate) fn open_readonly_os_vault(path: &Path, mut document: Value) -> Result<Value, String> {
+    if let Some(encrypted) = document.get("encryptedCredentials") {
+        let decode = |field: &str| {
+            STANDARD
+                .decode(encrypted[field].as_str().unwrap_or_default())
+                .map_err(|_| "Invalid credential encoding".to_string())
+        };
+        let nonce = decode("nonce")?;
+        if nonce.len() != 12 {
+            return Err("Invalid credential nonce".into());
+        }
+        let identity = format!("{:x}", Sha256::digest(path.to_string_lossy().as_bytes()));
+        let entry = keyring::Entry::new("QuixiDesk credentials", &identity)
+            .map_err(|e| credential_store_error(&e.to_string()))?;
+        let k = native_key_with_entries(&entry, None, false)?;
+        let cipher = Aes256Gcm::new_from_slice(&k).map_err(|_| "Invalid credential key")?;
+        let bytes = cipher
+            .decrypt(Nonce::from_slice(&nonce), decode("ciphertext")?.as_ref())
+            .map_err(|_| "Credentials could not be decrypted from OS vault.".to_string())?;
+        let secrets: Value = serde_json::from_slice(&bytes).map_err(|e| e.to_string())?;
+        for provider in document["providers"].as_array_mut().into_iter().flatten() {
+            if let Some(fields) = secrets[provider["id"].as_str().unwrap_or_default()].as_object() {
+                provider.as_object_mut().unwrap().extend(fields.clone());
+            }
+        }
+        document
+            .as_object_mut()
+            .unwrap()
+            .remove("encryptedCredentials");
+    }
+    Ok(document)
+}
 #[cfg(test)]
 mod tests {
     use super::*;

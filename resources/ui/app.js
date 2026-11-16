@@ -717,6 +717,11 @@
           ),
         ),
       ),
+      el("div", {
+        class: "sidebar-explorer",
+        id: "sidebar-explorer",
+        "aria-label": "Workspace Explorer",
+      }),
       el("div", { class: "recent", id: "recents" }),
       el(
         "footer",
@@ -843,6 +848,47 @@
         ),
       );
   }
+  let sidebarExplorerPanel = null;
+  function sessionWorkspaceFolders(s) {
+    const folders = [];
+    if (s?.cwd) folders.push(s.cwd);
+    if (Array.isArray(s?.userSelectedFolders)) {
+      for (const f of s.userSelectedFolders) if (f && !folders.includes(f)) folders.push(f);
+    }
+    const cur = currentFolder();
+    if (cur && !folders.includes(cur)) folders.push(cur);
+    return folders;
+  }
+  function renderSidebarExplorer() {
+    const target = document.getElementById("sidebar-explorer");
+    if (!target || !window.TsExplorerPanel?.create) return;
+    sidebarExplorerPanel?.dispose();
+    sidebarExplorerPanel = window.TsExplorerPanel.create({ el, button, ib, icon, toast, rpc, dialog });
+    const s = session();
+    const explorerContext = s || { sessionId: explorerDraftId(), title: "New conversation" };
+    void sidebarExplorerPanel.render(target, explorerContext, {
+      projectName: project()?.name || "No project",
+      workspaceFolders: sessionWorkspaceFolders(s),
+      compact: true,
+    });
+  }
+  async function openFolderInExplorer() {
+    try {
+      const path = await rpc("FileSystem", "browseFolder", ["Open project or folder in Explorer"]);
+      if (!path) return;
+      const s = session();
+      const targetSessionId = s ? s.sessionId : explorerDraftId();
+      await rpc("Explorer", "addSource", [{ sessionId: targetSessionId, path }]);
+      if (!s) {
+        state.folder = path;
+        if (!state.taskFolders.includes(path)) state.taskFolders.push(path);
+      }
+      renderSidebarExplorer();
+      if (document.querySelector(".drawer.workspace-dock")) void contextDrawer("explorer");
+    } catch (error) {
+      toast(error.message, true);
+    }
+  }
   function renderPage() {
     const host = document.getElementById("page-host");
     if (!host) return;
@@ -858,6 +904,7 @@
       settings: settingsPage,
     };
     handlers[state.page]?.(host);
+    renderSidebarExplorer();
     updateAgentControls();
     if (state.browser) renderBrowser(host);
   }
@@ -937,6 +984,7 @@
           project() ? button(project().name, () => navigate("project", project().id), "quiet project-chip", "projects") : null,
           s.forkedFrom ? button("Original conversation",()=>navigate("chat",s.forkedFrom.sessionId),"quiet") : null,
           el("span", { id: "session-collab-pills", class: "row" }, contextMeterPill(s), jobsBadge(s)),
+          button("Open Folder", () => openFolderInExplorer(), "quiet", "folder"),
           currentFolder() ? button("Open in…", () => openInDialog(s), "quiet", "folder") : null,
           button("Find in conversation", () => openConversationFind(), "quiet", "search"),
           button("Explorer", () => contextDrawer("explorer"), "quiet", "folder"),
@@ -1011,6 +1059,7 @@
           el(
             "div",
             { class: "welcome-actions" },
+            button("Open Folder", () => openFolderInExplorer(), "quiet", "folder"),
             button("Open Explorer", () => contextDrawer("explorer"), "quiet", "folder"),
             el("small", { class: "hint" }, "Choose folders or files and the exact context for this new conversation."),
           ),
@@ -5297,7 +5346,10 @@
           tabContent.replaceChildren(el("p", { class: "muted" }, "Explorer panel is unavailable."));
           return;
         }
-        await explorerPanel.render(tabContent, explorerContext, { projectName: project()?.name || "No project" });
+        await explorerPanel.render(tabContent, explorerContext, {
+          projectName: project()?.name || "No project",
+          workspaceFolders: sessionWorkspaceFolders(s),
+        });
         return;
       }
       if (state.dockTab === "changes") {
