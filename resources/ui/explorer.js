@@ -31,13 +31,14 @@
   }
 
   function create(deps) {
-    const { el, button, ib, icon, toast, rpc, dialog } = deps;
+    const { el, button, ib, icon, toast, rpc, dialog, onOpenFile } = deps;
     let session = null;
     let data = null;
     let preview = null;
     let host = null;
     let projectName = "No project";
     let workspaceFolders = [];
+    let openFileHandler = typeof onOpenFile === "function" ? onOpenFile : null;
     let compactMode = false;
     let timer = null;
     let menu = null;
@@ -214,8 +215,16 @@
                     "check",
                   ]
                 : [
-                    "Preview file",
-                    () => previewFile(source, entry.relativePath, entry.name),
+                    openFileHandler ? "Open in Editor" : "Preview file",
+                    () =>
+                      openFileHandler
+                        ? openFileHandler({
+                            source,
+                            sourceId: source.id,
+                            relativePath: entry.relativePath,
+                            name: entry.name,
+                          })
+                        : previewFile(source, entry.relativePath, entry.name),
                     "file",
                   ],
               isDir
@@ -295,6 +304,17 @@
         if (isDir) caret.click();
         else void previewFile(source, entry.relativePath, entry.name);
       });
+      if (!isDir && openFileHandler) {
+        row.addEventListener("dblclick", (event) => {
+          event.stopPropagation();
+          void openFileHandler({
+            source,
+            sourceId: source.id,
+            relativePath: entry.relativePath,
+            name: entry.name,
+          });
+        });
+      }
 
       if (isDir) {
         const expanded =
@@ -736,6 +756,9 @@
         session = currentSession;
         projectName = meta.projectName || "No project";
         compactMode = Boolean(meta.compact);
+        if (typeof meta.onOpenFile === "function") {
+          openFileHandler = meta.onOpenFile;
+        }
         workspaceFolders = Array.isArray(meta.workspaceFolders)
           ? meta.workspaceFolders.filter(Boolean)
           : [];

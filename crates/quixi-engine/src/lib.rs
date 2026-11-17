@@ -24,6 +24,7 @@ mod turns;
 mod chat_workflows;
 mod python_projects;
 pub mod explorer;
+pub mod editor;
 #[cfg(test)]
 mod steering_tests;
 #[cfg(test)]
@@ -93,6 +94,7 @@ pub struct QuixiEngine {
     pub shell_host: ShellHostEngine,
     pub provider_manager: ProviderManager,
     pub explorer: explorer::ExplorerStore,
+    pub editor: editor::EditorStore,
     pub user_locale: RwLock<String>,
     pub emitter: RwLock<Option<EventCallback>>,
     turn_cancellations: RwLock<HashMap<String, Arc<AtomicBool>>>,
@@ -317,6 +319,7 @@ impl QuixiEngine {
             shell_host: ShellHostEngine::new(),
             provider_manager,
             explorer: explorer::ExplorerStore::new(&data_dir),
+            editor: editor::EditorStore::new(&data_dir),
             user_locale: RwLock::new(initial_locale),
             emitter: RwLock::new(None),
             turn_cancellations: RwLock::new(HashMap::new()),

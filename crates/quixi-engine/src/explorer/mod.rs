@@ -220,6 +220,30 @@ impl ExplorerStore {
             .collect()
     }
 
+    /// Resolves a physical file path for a registered Explorer source in `session_id`.
+    pub fn resolve_source_file(
+        &self,
+        session_id: &str,
+        source_id: &str,
+        relative_path: &str,
+    ) -> Result<(PathBuf, String), String> {
+        let state = self.state.read();
+        let session = state
+            .sessions
+            .get(session_id)
+            .ok_or_else(|| "Explorer session not found.".to_string())?;
+        let source = session
+            .sources
+            .iter()
+            .find(|s| s.id == source_id)
+            .ok_or_else(|| "Explorer source not found.".to_string())?;
+        if source.kind == "file" {
+            return Ok((PathBuf::from(&source.path), String::new()));
+        }
+        let joined = tree::safe_join(Path::new(&source.path), relative_path)?;
+        Ok((joined, relative_path.to_string()))
+    }
+
     /// Checks whether `target` was explicitly selected by the user in `session_id`
     /// (either as a selected individual file source or in `selected_paths` of a folder source).
     /// Folder-wide inheritance (`source.selected == true` alone) does not count as explicit

@@ -341,6 +341,66 @@ impl EipcRouter {
                 let window = args.first().and_then(|v| v.get("windowTokens")).and_then(Value::as_u64).unwrap_or(0) as usize;
                 self.engine.explorer.context_preview(session_id, window)
             }
+            // --- Editor: tabbed manual file editor, atomic save, external diff, layout persistence ---
+            ("Editor", "openFile") => {
+                let body = args.first().unwrap_or(&Value::Null);
+                let session_id = body.get("sessionId").and_then(Value::as_str).unwrap_or("");
+                let source_id = body.get("sourceId").and_then(Value::as_str).unwrap_or("");
+                let relative_path = body.get("relativePath").and_then(Value::as_str).unwrap_or("");
+                let raw_path = body.get("path").and_then(Value::as_str).unwrap_or("");
+                let mut roots = self.engine.editor_allowed_roots(session_id);
+                if !source_id.is_empty() {
+                    match self.engine.explorer.resolve_source_file(session_id, source_id, relative_path) {
+                        Ok((resolved, rel)) => {
+                            if let Some(parent) = resolved.parent() {
+                                roots.push(parent.to_string_lossy().to_string());
+                            }
+                            quixi_engine::editor::open_file(&resolved, &roots, Some(&rel))
+                        }
+                        Err(err) => json!({ "error": err }),
+                    }
+                } else if !raw_path.trim().is_empty() {
+                    quixi_engine::editor::open_file(Path::new(raw_path), &roots, Some(relative_path))
+                } else {
+                    json!({ "error": "Missing file path." })
+                }
+            }
+            ("Editor", "saveFile") => {
+                let body = args.first().unwrap_or(&Value::Null);
+                let session_id = body.get("sessionId").and_then(Value::as_str).unwrap_or("");
+                let raw_path = body.get("path").and_then(Value::as_str).unwrap_or("");
+                let content = body.get("content").and_then(Value::as_str).unwrap_or("");
+                let line_ending = body.get("lineEnding").and_then(Value::as_str);
+                let expected_hash = body.get("expectedHash").and_then(Value::as_str);
+                let force = body.get("force").and_then(Value::as_bool).unwrap_or(false);
+                if raw_path.trim().is_empty() {
+                    json!({ "error": "Missing file path." })
+                } else {
+                    let roots = self.engine.editor_allowed_roots(session_id);
+                    quixi_engine::editor::save_file(Path::new(raw_path), &roots, content, line_ending, expected_hash, force)
+                }
+            }
+            ("Editor", "statFile") => {
+                let body = args.first().unwrap_or(&Value::Null);
+                let session_id = body.get("sessionId").and_then(Value::as_str).unwrap_or("");
+                let raw_path = body.get("path").and_then(Value::as_str).unwrap_or("");
+                let include_content = body.get("includeContent").and_then(Value::as_bool).unwrap_or(false);
+                if raw_path.trim().is_empty() {
+                    json!({ "error": "Missing file path." })
+                } else {
+                    let roots = self.engine.editor_allowed_roots(session_id);
+                    quixi_engine::editor::stat_file(Path::new(raw_path), &roots, include_content)
+                }
+            }
+            ("Editor", "getWorkspaceState") => {
+                let workspace_key = args.first().and_then(|v| v.get("workspaceKey")).and_then(Value::as_str).unwrap_or("default");
+                self.engine.editor.get_workspace_state(workspace_key)
+            }
+            ("Editor", "saveWorkspaceState") => {
+                let body = args.first().unwrap_or(&Value::Null);
+                let workspace_key = body.get("workspaceKey").and_then(Value::as_str).unwrap_or("default");
+                self.engine.editor.save_workspace_state(workspace_key, body)
+            }
             // --- AppFeatures & AppPreferences & AppConfig ---
             ("AppFeatures", "getSupportedFeatures") => self.engine.desktop_features.clone(),
             ("AppPreferences", "getPreferences") | ("Preferences", "getPreferences") => {

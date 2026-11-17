@@ -603,6 +603,21 @@ impl QuixiEngine {
         (effective_cwd, allowed_roots)
     }
 
+    pub fn editor_allowed_roots(&self, session_id: &str) -> Vec<String> {
+        let (_, mut roots) = self.effective_session_workspace(session_id, "");
+        for folder in self.trusted_folders.read().iter() {
+            if !folder.trim().is_empty() && !roots.iter().any(|r| r == folder) {
+                roots.push(folder.clone());
+            }
+        }
+        if let Some(sess) = self.code_sessions.read().get(session_id) {
+            if !sess.cwd.trim().is_empty() && !roots.iter().any(|r| r == &sess.cwd) {
+                roots.push(sess.cwd.clone());
+            }
+        }
+        roots
+    }
+
     fn blocked_sensitive_access(
         &self,
         session_id: &str,
@@ -995,6 +1010,28 @@ impl QuixiEngine {
                 ) {
                     let target = agent_tools::resolve_path(path_arg, execution_cwd);
                     self.observations.record(session_id, &target);
+                }
+                if !res.1 && matches!(
+                    name,
+                    agent_tools::TOOL_WRITE
+                        | agent_tools::TOOL_WRITE_FILE_SNAKE
+                        | agent_tools::TOOL_EDIT
+                        | agent_tools::TOOL_EDIT_FILE_SNAKE
+                        | agent_tools::TOOL_DELETE_FILE
+                        | agent_tools::TOOL_DELETE_FILE_SNAKE
+                ) {
+                    let target = agent_tools::resolve_path(path_arg, execution_cwd);
+                    let display_path = crate::editor::clean_display_path(&target.canonicalize().unwrap_or(target));
+                    self.emit_eipc(
+                        "quixi.web",
+                        "Editor",
+                        "onExternalFileChanged",
+                        json!({
+                            "sessionId": session_id,
+                            "path": display_path,
+                            "toolName": name,
+                        }),
+                    );
                 }
                 res
             };

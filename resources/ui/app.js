@@ -774,7 +774,33 @@
         () => providerDirectory(),
         "quiet",
       ),
+      button("Editor", () => toggleEditorPane(), "quiet", "file"),
       ib("Toggle TsCIDE Browser", "browser", () => toggleBrowser()),
+    );
+    const editorResizer = el("div", {
+      id: "editor-resizer",
+      class: "editor-resizer",
+      hidden: true,
+      "aria-hidden": "true",
+    });
+    const editorPane = el("aside", {
+      id: "editor-pane",
+      class: "editor-pane",
+      hidden: true,
+      "aria-label": "Code Editor",
+    });
+    const workspaceSplit = el(
+      "div",
+      { id: "workspace-split", class: "workspace-split" },
+      el("div", {
+        id: "page-host",
+        class:
+          state.page === "new" || state.page === "chat"
+            ? "chat-layout"
+            : "page",
+      }),
+      editorResizer,
+      editorPane,
     );
     root.replaceChildren(
       el(
@@ -785,16 +811,11 @@
           "main",
           { class: "main" },
           top,
-          el("div", {
-            id: "page-host",
-            class:
-              state.page === "new" || state.page === "chat"
-                ? "chat-layout"
-                : "page",
-          }),
+          workspaceSplit,
         ),
       ),
     );
+    mountEditorPane(workspaceSplit, editorResizer, editorPane);
     root.removeAttribute("aria-busy");
     document.body.dataset.page = state.page;
     renderRecents();
@@ -849,6 +870,71 @@
       );
   }
   let sidebarExplorerPanel = null;
+  let editorPanel = null;
+  function applyEditorLayout(layout) {
+    const split = document.getElementById("workspace-split");
+    const resizer = document.getElementById("editor-resizer");
+    const pane = document.getElementById("editor-pane");
+    if (!split || !resizer || !pane) return;
+    const isOpen = Boolean(layout?.isOpen);
+    const mode = layout?.layoutMode || "split";
+    const width = Number(layout?.widthPx) || 520;
+    split.classList.toggle("is-editor-max", isOpen && mode === "editor-max");
+    pane.hidden = !isOpen || mode === "chat-max";
+    resizer.hidden = !isOpen || mode !== "split";
+    if (mode === "split") pane.style.width = `${width}px`;
+  }
+  function mountEditorPane(split, resizer, pane) {
+    if (!window.TsEditorPanel?.create) return;
+    if (!editorPanel) {
+      editorPanel = window.TsEditorPanel.create({
+        el,
+        button,
+        ib,
+        icon,
+        toast,
+        rpc,
+        dialog,
+        onLayoutChange: applyEditorLayout,
+      });
+    }
+    editorPanel.mount(pane);
+    applyEditorLayout(editorPanel.getState());
+    resizer.addEventListener("mousedown", (startEvent) => {
+      startEvent.preventDefault();
+      resizer.classList.add("is-dragging");
+      const onMove = (moveEvent) => {
+        const rect = split.getBoundingClientRect();
+        const nextWidth = rect.right - moveEvent.clientX;
+        editorPanel?.setWidth(nextWidth);
+      };
+      const onUp = () => {
+        resizer.classList.remove("is-dragging");
+        window.removeEventListener("mousemove", onMove);
+        window.removeEventListener("mouseup", onUp);
+      };
+      window.addEventListener("mousemove", onMove);
+      window.addEventListener("mouseup", onUp);
+    });
+  }
+  function currentWorkspaceKey() {
+    return currentFolder() || project()?.id || session()?.sessionId || "default";
+  }
+  function toggleEditorPane() {
+    if (!editorPanel) return;
+    const st = editorPanel.getState();
+    if (!st.isOpen || st.layoutMode === "chat-max") {
+      editorPanel.setOpen(true);
+    } else {
+      editorPanel.setOpen(false);
+    }
+  }
+  async function openFileInEditor(info) {
+    if (!editorPanel) return;
+    const s = session();
+    editorPanel.setSession(s ? s.sessionId : explorerDraftId());
+    await editorPanel.openFile(info);
+  }
   function sessionWorkspaceFolders(s) {
     const folders = [];
     if (s?.cwd) folders.push(s.cwd);
@@ -863,13 +949,23 @@
     const target = document.getElementById("sidebar-explorer");
     if (!target || !window.TsExplorerPanel?.create) return;
     sidebarExplorerPanel?.dispose();
-    sidebarExplorerPanel = window.TsExplorerPanel.create({ el, button, ib, icon, toast, rpc, dialog });
+    sidebarExplorerPanel = window.TsExplorerPanel.create({
+      el,
+      button,
+      ib,
+      icon,
+      toast,
+      rpc,
+      dialog,
+      onOpenFile: (info) => void openFileInEditor(info),
+    });
     const s = session();
     const explorerContext = s || { sessionId: explorerDraftId(), title: "New conversation" };
     void sidebarExplorerPanel.render(target, explorerContext, {
       projectName: project()?.name || "No project",
       workspaceFolders: sessionWorkspaceFolders(s),
       compact: true,
+      onOpenFile: (info) => void openFileInEditor(info),
     });
   }
   async function openFolderInExplorer() {
@@ -884,6 +980,7 @@
         if (!state.taskFolders.includes(path)) state.taskFolders.push(path);
       }
       renderSidebarExplorer();
+      void editorPanel?.loadWorkspace(targetSessionId, currentWorkspaceKey());
       if (document.querySelector(".drawer.workspace-dock")) void contextDrawer("explorer");
     } catch (error) {
       toast(error.message, true);
@@ -905,6 +1002,8 @@
     };
     handlers[state.page]?.(host);
     renderSidebarExplorer();
+    const s = session();
+    void editorPanel?.loadWorkspace(s ? s.sessionId : explorerDraftId(), currentWorkspaceKey());
     updateAgentControls();
     if (state.browser) renderBrowser(host);
   }
@@ -5314,7 +5413,16 @@
     if (!s && initialTab !== "explorer") return;
     if (initialTab) state.dockTab = initialTab;
     const explorerContext = s || { sessionId: explorerDraftId(), title: "New conversation" };
-    const explorerPanel = window.TsExplorerPanel?.create({ el, button, ib, icon, toast, rpc, dialog });
+    const explorerPanel = window.TsExplorerPanel?.create({
+      el,
+      button,
+      ib,
+      icon,
+      toast,
+      rpc,
+      dialog,
+      onOpenFile: (info) => void openFileInEditor(info),
+    });
     const folder = s?.cwd || currentFolder();
     const tabContent = el("div", { class: "dock-body" });
     const tabsBar = el("div", { class: "dock-tabs", role: "tablist" });
@@ -5535,6 +5643,10 @@
     }
     if (channel === "quixi:artifact-preview") {
       loadArtifacts();
+      return;
+    }
+    if (channel.includes("Editor") && channel.includes("onExternalFileChanged")) {
+      void editorPanel?.handleExternalChange(payload);
       return;
     }
     if (
