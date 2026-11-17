@@ -10,7 +10,7 @@
 
 .workspace-split > #page-host {
   flex: 1 1 0%;
-  min-width: 280px;
+  min-width: 300px;
   min-height: 0;
 }
 
@@ -21,6 +21,65 @@
 .workspace-split.is-editor-max > .editor-pane {
   width: 100% !important;
   flex: 1 1 100%;
+}
+
+.context-dock-host {
+  flex: 0 0 auto;
+  width: 330px;
+  min-width: 260px;
+  max-width: 55vw;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  background: var(--panel, var(--bg));
+  border-left: 1px solid var(--border);
+  overflow: hidden;
+}
+
+.context-dock-host[hidden] {
+  display: none !important;
+}
+
+.context-dock-host .drawer {
+  position: static;
+  width: 100% !important;
+  max-width: 100% !important;
+  flex: 1 1 auto;
+  min-height: 0;
+  border-left: none;
+  box-shadow: none;
+}
+
+.editor-monaco-host {
+  flex: 1 1 auto;
+  width: 100%;
+  height: 100%;
+  min-height: 220px;
+  position: relative;
+}
+
+.editor-monaco-diff {
+  width: 100%;
+  height: 460px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  overflow: hidden;
+}
+
+.editor-fallback-input {
+  position: relative;
+  color: var(--text) !important;
+  background: var(--bg) !important;
+  padding: 10px 12px;
+  width: 100%;
+  height: 100%;
+  box-sizing: border-box;
+  border: none;
+  outline: none;
+  resize: none;
+  font-family: inherit;
+  font-size: inherit;
+  line-height: inherit;
 }
 
 .editor-resizer {

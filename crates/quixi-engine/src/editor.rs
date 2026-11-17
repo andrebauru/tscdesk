@@ -159,6 +159,9 @@ pub(crate) fn detect_language(path: &Path) -> &'static str {
     if name == "makefile" {
         return "makefile";
     }
+    if name == "cargo.toml" || name == "cargo.lock" {
+        return "toml";
+    }
     match path
         .extension()
         .and_then(|s| s.to_str())
@@ -167,9 +170,8 @@ pub(crate) fn detect_language(path: &Path) -> &'static str {
         .as_str()
     {
         "rs" => "rust",
-        "js" | "mjs" | "cjs" => "javascript",
-        "ts" | "mts" | "cts" => "typescript",
-        "jsx" | "tsx" => "typescript",
+        "js" | "mjs" | "cjs" | "jsx" => "javascript",
+        "ts" | "mts" | "cts" | "tsx" => "typescript",
         "json" | "jsonc" => "json",
         "yaml" | "yml" => "yaml",
         "toml" => "toml",
@@ -178,12 +180,43 @@ pub(crate) fn detect_language(path: &Path) -> &'static str {
         "py" | "pyw" => "python",
         "md" | "markdown" => "markdown",
         "sh" | "bash" | "zsh" => "shell",
+        "ps1" | "psm1" | "psd1" => "powershell",
         "sql" => "sql",
         "xml" | "svg" => "xml",
         "php" => "php",
+        "go" => "go",
+        "c" | "h" => "c",
+        "cpp" | "cc" | "cxx" | "hpp" | "hxx" => "cpp",
         "txt" | "log" | "env" | "gitignore" => "plaintext",
         _ => "plaintext",
     }
+}
+
+fn detect_language_with_content(path: &Path, content: &str) -> &'static str {
+    let by_ext = detect_language(path);
+    if by_ext != "plaintext" {
+        return by_ext;
+    }
+    let trimmed = content.trim_start();
+    if trimmed.starts_with("#!/") || trimmed.starts_with("#! /") {
+        let first_line = trimmed.lines().next().unwrap_or("");
+        if first_line.contains("python") {
+            return "python";
+        }
+        if first_line.contains("sh") || first_line.contains("bash") || first_line.contains("zsh") {
+            return "shell";
+        }
+        if first_line.contains("node") {
+            return "javascript";
+        }
+    }
+    if trimmed.starts_with("<?php") {
+        return "php";
+    }
+    if trimmed.starts_with("<?xml") {
+        return "xml";
+    }
+    "plaintext"
 }
 
 fn hash_bytes(bytes: &[u8]) -> String {
@@ -198,12 +231,46 @@ fn mtime_ms(meta: &fs::Metadata) -> u64 {
         .unwrap_or(0)
 }
 
-fn is_binary_bytes(bytes: &[u8]) -> bool {
-    let sample = &bytes[..bytes.len().min(8192)];
-    if sample.contains(&0) {
-        return true;
+fn has_nul_bytes(bytes: &[u8]) -> bool {
+    bytes[..bytes.len().min(8192)].contains(&0)
+}
+
+fn decode_text_strict(bytes: &[u8]) -> Result<(String, &'static str, bool), &'static str> {
+    if bytes.starts_with(&[0xEF, 0xBB, 0xBF]) {
+        let body = std::str::from_utf8(&bytes[3..]).map_err(|_| "invalid-utf8")?;
+        return Ok((body.to_string(), "UTF-8-BOM", true));
     }
-    std::str::from_utf8(bytes).is_err()
+    if bytes.starts_with(&[0xFF, 0xFE]) {
+        let units: Vec<u16> = bytes[2..]
+            .chunks_exact(2)
+            .map(|c| u16::from_le_bytes([c[0], c[1]]))
+            .collect();
+        if bytes[2..].len() % 2 != 0 {
+            return Err("invalid-utf16");
+        }
+        let s = String::from_utf16(&units).map_err(|_| "invalid-utf16")?;
+        return Ok((s, "UTF-16LE", true));
+    }
+    if bytes.starts_with(&[0xFE, 0xFF]) {
+        let units: Vec<u16> = bytes[2..]
+            .chunks_exact(2)
+            .map(|c| u16::from_be_bytes([c[0], c[1]]))
+            .collect();
+        if bytes[2..].len() % 2 != 0 {
+            return Err("invalid-utf16");
+        }
+        let s = String::from_utf16(&units).map_err(|_| "invalid-utf16")?;
+        return Ok((s, "UTF-16BE", true));
+    }
+    if has_nul_bytes(bytes) {
+        return Err("binary");
+    }
+    let s = std::str::from_utf8(bytes).map_err(|_| "invalid-utf8")?;
+    Ok((s.to_string(), "UTF-8", false))
+}
+
+fn is_binary_bytes(bytes: &[u8]) -> bool {
+    matches!(decode_text_strict(bytes), Err("binary" | "invalid-utf16"))
 }
 
 fn detect_line_ending(text: &str) -> &'static str {
@@ -262,35 +329,62 @@ pub fn open_file(target: &Path, allowed_roots: &[String], relative_hint: Option<
         .and_then(|s| s.to_str())
         .unwrap_or("untitled")
         .to_string();
-    if is_binary_bytes(&bytes) {
-        return json!({
-            "path": display_path,
-            "name": name,
-            "relativePath": relative_hint.unwrap_or(""),
-            "binary": true,
-            "size": meta.len(),
-            "mtimeMs": mtime_ms(&meta),
-            "error": "Binary or non-UTF-8 file cannot be edited as text."
-        });
+    match decode_text_strict(&bytes) {
+        Ok((raw_text, encoding, has_bom)) => {
+            let line_ending = detect_line_ending(&raw_text);
+            let normalized_text = raw_text.replace("\r\n", "\n");
+            let lang = detect_language_with_content(target, &normalized_text);
+            json!({
+                "path": display_path,
+                "name": name,
+                "relativePath": relative_hint.unwrap_or(""),
+                "language": lang,
+                "content": normalized_text,
+                "lineEnding": if line_ending == "\r\n" { "CRLF" } else { "LF" },
+                "encoding": encoding,
+                "hasBom": has_bom,
+                "binary": false,
+                "invalidEncoding": false,
+                "size": meta.len(),
+                "mtimeMs": mtime_ms(&meta),
+                "hash": hash_bytes(&bytes),
+                "readOnly": meta.permissions().readonly(),
+                "error": Value::Null,
+            })
+        }
+        Err("invalid-utf8") => {
+            let latin1_preview: String = bytes.iter().map(|&b| b as char).collect();
+            json!({
+                "path": display_path,
+                "name": name,
+                "relativePath": relative_hint.unwrap_or(""),
+                "language": detect_language(target),
+                "content": latin1_preview.replace("\r\n", "\n"),
+                "lineEnding": if latin1_preview.contains("\r\n") { "CRLF" } else { "LF" },
+                "encoding": "ISO-8859-1 / non-UTF-8",
+                "hasBom": false,
+                "binary": false,
+                "invalidEncoding": true,
+                "size": meta.len(),
+                "mtimeMs": mtime_ms(&meta),
+                "hash": hash_bytes(&bytes),
+                "readOnly": true,
+                "error": "File contains non-UTF-8 byte sequences. Opened read-only to prevent silent corruption.",
+            })
+        }
+        Err(_) => {
+            json!({
+                "path": display_path,
+                "name": name,
+                "relativePath": relative_hint.unwrap_or(""),
+                "binary": true,
+                "invalidEncoding": false,
+                "size": meta.len(),
+                "mtimeMs": mtime_ms(&meta),
+                "error": "Binary file cannot be edited as text."
+            })
+        }
     }
-    let raw_text = String::from_utf8_lossy(&bytes).to_string();
-    let line_ending = detect_line_ending(&raw_text);
-    let normalized_text = raw_text.replace("\r\n", "\n");
-    json!({
-        "path": display_path,
-        "name": name,
-        "relativePath": relative_hint.unwrap_or(""),
-        "language": detect_language(target),
-        "content": normalized_text,
-        "lineEnding": if line_ending == "\r\n" { "CRLF" } else { "LF" },
-        "encoding": "UTF-8",
-        "binary": false,
-        "size": meta.len(),
-        "mtimeMs": mtime_ms(&meta),
-        "hash": hash_bytes(&bytes),
-        "readOnly": meta.permissions().readonly(),
-        "error": Value::Null,
-    })
 }
 
 pub fn save_file(

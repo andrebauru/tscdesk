@@ -789,6 +789,18 @@
       hidden: true,
       "aria-label": "Code Editor",
     });
+    const contextResizer = el("div", {
+      id: "context-resizer",
+      class: "editor-resizer",
+      hidden: true,
+      "aria-hidden": "true",
+    });
+    const contextDockHost = el("div", {
+      id: "context-dock-host",
+      class: "context-dock-host",
+      hidden: true,
+      "aria-label": "Explorer and Context",
+    });
     const workspaceSplit = el(
       "div",
       { id: "workspace-split", class: "workspace-split" },
@@ -801,6 +813,8 @@
       }),
       editorResizer,
       editorPane,
+      contextResizer,
+      contextDockHost,
     );
     root.replaceChildren(
       el(
@@ -904,8 +918,10 @@
       startEvent.preventDefault();
       resizer.classList.add("is-dragging");
       const onMove = (moveEvent) => {
+        const dockHost = document.getElementById("context-dock-host");
+        const dockWidth = dockHost && !dockHost.hidden ? dockHost.getBoundingClientRect().width : 0;
         const rect = split.getBoundingClientRect();
-        const nextWidth = rect.right - moveEvent.clientX;
+        const nextWidth = rect.right - dockWidth - moveEvent.clientX;
         editorPanel?.setWidth(nextWidth);
       };
       const onUp = () => {
@@ -916,6 +932,26 @@
       window.addEventListener("mousemove", onMove);
       window.addEventListener("mouseup", onUp);
     });
+    const ctxResizer = document.getElementById("context-resizer");
+    const ctxHost = document.getElementById("context-dock-host");
+    if (ctxResizer && ctxHost) {
+      ctxResizer.addEventListener("mousedown", (startEvent) => {
+        startEvent.preventDefault();
+        ctxResizer.classList.add("is-dragging");
+        const onMove = (moveEvent) => {
+          const rect = split.getBoundingClientRect();
+          const w = Math.max(260, Math.min(640, rect.right - moveEvent.clientX));
+          ctxHost.style.width = `${w}px`;
+        };
+        const onUp = () => {
+          ctxResizer.classList.remove("is-dragging");
+          window.removeEventListener("mousemove", onMove);
+          window.removeEventListener("mouseup", onUp);
+        };
+        window.addEventListener("mousemove", onMove);
+        window.addEventListener("mouseup", onUp);
+      });
+    }
   }
   function currentWorkspaceKey() {
     return currentFolder() || project()?.id || session()?.sessionId || "default";
@@ -5408,8 +5444,9 @@
       browserAction("navigate", { url: data.url });
   });
   async function contextDrawer(initialTab) {
-    const host = document.getElementById("page-host");
-    host.querySelector(".drawer")?.remove();
+    const dockHost = document.getElementById("context-dock-host") || document.getElementById("page-host");
+    const ctxResizer = document.getElementById("context-resizer");
+    dockHost.querySelector(".drawer")?.remove();
     const s = session();
     if (!s && initialTab !== "explorer") return;
     if (initialTab) state.dockTab = initialTab;
@@ -5436,7 +5473,13 @@
         "div",
         { class: "row" },
         el("h3", { class: "grow" }, "Files & context"),
-        ib("Close context", "close", () => { stopTermPoll(); explorerPanel?.dispose(); drawer.remove(); }),
+        ib("Close context", "close", () => {
+          stopTermPoll();
+          explorerPanel?.dispose();
+          drawer.remove();
+          if (dockHost.id === "context-dock-host") dockHost.hidden = true;
+          if (ctxResizer) ctxResizer.hidden = true;
+        }),
       ),
       tabsBar,
       tabContent,
@@ -5609,7 +5652,9 @@
       tabContent.replaceChildren(fragment);
     }
 
-    host.append(drawer);
+    dockHost.append(drawer);
+    if (dockHost.id === "context-dock-host") dockHost.hidden = false;
+    if (ctxResizer) ctxResizer.hidden = false;
     await renderDockTab();
   }
   const refreshTimers = new Map();

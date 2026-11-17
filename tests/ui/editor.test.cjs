@@ -187,13 +187,24 @@ function createFixture() {
   return { window, panel, editorPane, disk, workspaceStates, dialogs, toasts, layoutChanges, calls, el, button, ib, icon, rpc, dialog };
 }
 
-test("editor is wired into index.html, explorer.js, and app.js outside #page-host", () => {
+test("editor is wired into index.html, explorer.js, and app.js outside #page-host", (t) => {
+  const f = createFixture();
+  t.after(() => f.panel.dispose());
   assert.match(indexHtml, /href="\/editor\.css"/);
   assert.match(indexHtml, /src="\/editor\.js"/);
   assert.match(appSource, /id:\s*"editor-pane"/);
   assert.match(appSource, /id:\s*"workspace-split"/);
+  assert.match(appSource, /id:\s*"context-dock-host"/);
   assert.match(appSource, /onExternalFileChanged/);
   assert.match(explorerSource, /Open in Editor/);
+  // Verify left-to-right order: #page-host -> #editor-pane -> #context-dock-host
+  const splitIdx = appSource.indexOf('id: "workspace-split"');
+  const pageIdx = appSource.indexOf('id: "page-host"', splitIdx);
+  const edIdx = appSource.indexOf('editorPane,', splitIdx);
+  const ctxIdx = appSource.indexOf('contextDockHost,', splitIdx);
+  assert.ok(pageIdx > 0 && edIdx > pageIdx && ctxIdx > edIdx);
+  // Verify Cargo.toml -> toml detection
+  assert.equal(f.window.TsEditorPanel.detectLanguageFromName("Cargo.toml"), "toml");
 });
 
 test("opens tabs without duplicates, edits manually, saves with Ctrl+S, and detects binary files", async (t) => {

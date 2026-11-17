@@ -1,83 +1,182 @@
-/* Copyright (c) 2026 QuixiAI. MIT license. Integrated tabbed code/text editor
-   with syntax highlighting, undo/redo, find/replace, Ctrl+S atomic save,
-   external AI change conflict handling, and per-workspace layout persistence. */
+/* Copyright (c) 2026 QuixiAI. MIT license. Integrated Microsoft Monaco Editor
+   with offline local bundle, TOML Monarch grammar, multi-tab management,
+   Ctrl+S atomic save, encoding safety, diff conflict resolution, and layout persistence. */
 (() => {
   "use strict";
 
-  const TEXT_TAB = "  ";
   const SAVE_DEBOUNCE_MS = 350;
   const STAT_POLL_MS = 2500;
+  let monacoPromise = null;
 
-  function escapeHtml(text) {
-    return String(text || "")
-      .replace(/&/g, "&amp;")
-      .replace(/</g, "&lt;")
-      .replace(/>/g, "&gt;");
+  function registerTomlLanguage(monaco) {
+    if (monaco.languages.getLanguages().some((l) => l.id === "toml")) return;
+    monaco.languages.register({
+      id: "toml",
+      extensions: [".toml"],
+      filenames: ["Cargo.toml", "Cargo.lock", "pyproject.toml"],
+      aliases: ["TOML", "toml"],
+    });
+    monaco.languages.setLanguageConfiguration("toml", {
+      comments: { lineComment: "#" },
+      brackets: [
+        ["{", "}"],
+        ["[", "]"],
+        ["(", ")"],
+      ],
+      autoClosingPairs: [
+        { open: "{", close: "}" },
+        { open: "[", close: "]" },
+        { open: "(", close: ")" },
+        { open: '"', close: '"' },
+        { open: "'", close: "'" },
+      ],
+      surroundingPairs: [
+        { open: "{", close: "}" },
+        { open: "[", close: "]" },
+        { open: "(", close: ")" },
+        { open: '"', close: '"' },
+        { open: "'", close: "'" },
+      ],
+    });
+    monaco.languages.setMonarchTokensProvider("toml", {
+      defaultToken: "",
+      tokenPostfix: ".toml",
+      tokenizer: {
+        root: [
+          [/#.*$/, "comment"],
+          [/^\s*\[\[?[^\]\r\n]+\]?\]/, "type.identifier"],
+          [/^\s*[A-Za-z0-9_.-]+(?=\s*=)/, "key"],
+          [/"""/, "string", "@mlStringDouble"],
+          [/'''/, "string", "@mlStringSingle"],
+          [/"([^"\\]|\\.)*$/, "string.invalid"],
+          [/"/, "string", "@stringDouble"],
+          [/'[^']*'/, "string"],
+          [/\b(?:true|false)\b/, "keyword"],
+          [/\d{4}-\d{2}-\d{2}(?:[T ]\d{2}:\d{2}:\d{2}(?:\.\d+)?(?:Z|[+-]\d{2}:\d{2})?)?/, "number"],
+          [/0x[0-9a-fA-F_]+|0o[0-7_]+|0b[01_]+/, "number.hex"],
+          [/[+-]?(?:\d[\d_]*(?:\.[\d_]+)?(?:[eE][+-]?\d[\d_]*)?|inf|nan)\b/, "number"],
+          [/[{}()\[\]]/, "@brackets"],
+          [/[=,]/, "delimiter"],
+        ],
+        stringDouble: [
+          [/[^\\"]+/, "string"],
+          [/\\./, "string.escape"],
+          [/"/, "string", "@pop"],
+        ],
+        mlStringDouble: [
+          [/[^\\"]+/, "string"],
+          [/\\./, "string.escape"],
+          [/"""/, "string", "@pop"],
+          [/"/, "string"],
+        ],
+        mlStringSingle: [
+          [/[^']+/, "string"],
+          [/'''/, "string", "@pop"],
+          [/'/, "string"],
+        ],
+      },
+    });
   }
 
-  function highlightLine(line, lang) {
-    const escaped = escapeHtml(line);
-    if (!escaped) return " ";
-    if (lang === "plaintext") return escaped;
-
-    const rules = [];
-    if (lang === "json") {
-      rules.push([/"(?:\\.|[^"\\])*"(?=\s*:)/g, "tok-key"]);
-      rules.push([/"(?:\\.|[^"\\])*"/g, "tok-str"]);
-      rules.push([/\b(?:true|false|null)\b/g, "tok-kw"]);
-      rules.push([/-?\b\d+(?:\.\d+)?(?:[eE][+-]?\d+)?\b/g, "tok-num"]);
-    } else if (lang === "yaml" || lang === "toml") {
-      rules.push([/#.*$/g, "tok-com"]);
-      rules.push([/^(\s*[A-Za-z0-9_.-]+)(?=\s*[:=])/gm, "tok-key"]);
-      rules.push([/"(?:\\.|[^"\\])*"|'(?:\\.|[^'\\])*'/g, "tok-str"]);
-      rules.push([/\b(?:true|false|null)\b/g, "tok-kw"]);
-      rules.push([/\b\d+(?:\.\d+)?\b/g, "tok-num"]);
-    } else if (lang === "markdown") {
-      rules.push([/^#{1,6}\s+.*$/gm, "tok-kw"]);
-      rules.push([/`[^`]+`/g, "tok-str"]);
-      rules.push([/\*\*[^*]+\*\*/g, "tok-key"]);
-    } else if (lang === "html" || lang === "xml") {
-      rules.push([/&lt;!--[\s\S]*?--&gt;/g, "tok-com"]);
-      rules.push([/&lt;\/?[A-Za-z0-9_-]+/g, "tok-kw"]);
-      rules.push([/"(?:\\.|[^"\\])*"|'(?:\\.|[^'\\])*'/g, "tok-str"]);
-    } else if (lang === "css") {
-      rules.push([/\/\*[\s\S]*?\*\//g, "tok-com"]);
-      rules.push([/[A-Za-z-]+(?=\s*:)/g, "tok-key"]);
-      rules.push([/"(?:\\.|[^"\\])*"|'(?:\\.|[^'\\])*'/g, "tok-str"]);
-      rules.push([/#[0-9a-fA-F]{3,8}\b|\b\d+(?:\.\d+)?(?:px|rem|em|%|vh|vw|ms|s)?\b/g, "tok-num"]);
-    } else if (lang === "python" || lang === "shell") {
-      rules.push([/#.*$/gm, "tok-com"]);
-      rules.push([/"(?:\\.|[^"\\])*"|'(?:\\.|[^'\\])*'/g, "tok-str"]);
-      rules.push([/\b(?:def|class|import|from|as|if|elif|else|for|while|return|try|except|finally|with|async|await|yield|pass|break|continue|True|False|None|in|is|not|and|or|lambda)\b/g, "tok-kw"]);
-      rules.push([/\b\d+(?:\.\d+)?\b/g, "tok-num"]);
-    } else {
-      // rust, javascript, typescript, php, etc.
-      rules.push([/\/\/.*$/gm, "tok-com"]);
-      rules.push([/\/\*[\s\S]*?\*\//g, "tok-com"]);
-      rules.push([/"(?:\\.|[^"\\])*"|'(?:\\.|[^'\\])*'|`(?:\\.|[^`\\])*`/g, "tok-str"]);
-      rules.push([/\b(?:fn|let|mut|const|pub|mod|use|struct|enum|impl|trait|type|where|match|if|else|for|while|loop|return|async|await|function|var|class|import|export|from|default|try|catch|finally|throw|new|true|false|null|undefined|Some|None|Ok|Err|self|Self)\b/g, "tok-kw"]);
-      rules.push([/\b\d+(?:\.\d+)?\b/g, "tok-num"]);
-    }
-
-    // Tokenize without overlapping spans using a single-pass scanner on placeholders
-    const tokens = [];
-    let work = escaped;
-    for (const [regex, cls] of rules) {
-      work = work.replace(regex, (m) => {
-        if (m.includes("\u0001")) return m;
-        const idx = tokens.length;
-        tokens.push(`<span class="${cls}">${m}</span>`);
-        return `\u0001${idx}\u0002`;
-      });
-    }
-    return work.replace(/\u0001(\d+)\u0002/g, (_, idx) => tokens[Number(idx)] || "");
+  function defineThemes(monaco) {
+    monaco.editor.defineTheme("tscide-dark", {
+      base: "vs-dark",
+      inherit: true,
+      rules: [
+        { token: "key", foreground: "9cdcfe" },
+        { token: "type.identifier", foreground: "d97757", fontStyle: "bold" },
+      ],
+      colors: {
+        "editor.background": "#161618",
+        "editor.lineHighlightBackground": "#1f2024",
+        "editorGutter.background": "#161618",
+      },
+    });
+    monaco.editor.defineTheme("tscide-light", {
+      base: "vs",
+      inherit: true,
+      rules: [
+        { token: "key", foreground: "0451a5" },
+        { token: "type.identifier", foreground: "b8502e", fontStyle: "bold" },
+      ],
+      colors: {
+        "editor.background": "#ffffff",
+      },
+    });
   }
 
-  function highlightCode(text, lang) {
-    return String(text || "")
-      .split("\n")
-      .map((line) => highlightLine(line, lang))
-      .join("\n");
+  function currentMonacoTheme() {
+    return document.documentElement.dataset.theme === "light"
+      ? "tscide-light"
+      : "tscide-dark";
+  }
+
+  function loadMonaco() {
+    if (window.monaco?.editor) return Promise.resolve(window.monaco);
+    if (monacoPromise) return monacoPromise;
+    if (typeof window.Worker === "undefined" || typeof navigator === "undefined" || /jsdom/i.test(navigator.userAgent || "")) {
+      return Promise.resolve(null);
+    }
+    monacoPromise = new Promise((resolve) => {
+      const origin = window.location.origin;
+      window.MonacoEnvironment = {
+        getWorkerUrl() {
+          const code = `self.MonacoEnvironment = { baseUrl: '${origin}/vendor/monaco-editor/min/' }; importScripts('${origin}/vendor/monaco-editor/min/vs/base/worker/workerMain.js');`;
+          return URL.createObjectURL(new Blob([code], { type: "text/javascript" }));
+        },
+      };
+      const initWithRequire = () => {
+        try {
+          window.require.config({
+            paths: { vs: `${origin}/vendor/monaco-editor/min/vs` },
+          });
+          window.require(["vs/editor/editor.main"], () => {
+            if (window.monaco?.editor) {
+              registerTomlLanguage(window.monaco);
+              defineThemes(window.monaco);
+              resolve(window.monaco);
+            } else {
+              resolve(null);
+            }
+          }, () => resolve(null));
+        } catch (_) {
+          resolve(null);
+        }
+      };
+      if (typeof window.require === "function") {
+        initWithRequire();
+        return;
+      }
+      const script = document.createElement("script");
+      script.src = "/vendor/monaco-editor/min/vs/loader.js";
+      script.onload = initWithRequire;
+      script.onerror = () => resolve(null);
+      document.head.appendChild(script);
+    });
+    return monacoPromise;
+  }
+
+  function detectLanguageFromName(name, fallback = "plaintext") {
+    const lower = String(name || "").toLowerCase();
+    if (lower === "cargo.toml" || lower === "cargo.lock" || lower.endsWith(".toml")) return "toml";
+    if (lower.endsWith(".rs")) return "rust";
+    if (lower.endsWith(".json") || lower.endsWith(".jsonc")) return "json";
+    if (lower.endsWith(".yaml") || lower.endsWith(".yml")) return "yaml";
+    if (lower.endsWith(".js") || lower.endsWith(".jsx") || lower.endsWith(".mjs") || lower.endsWith(".cjs")) return "javascript";
+    if (lower.endsWith(".ts") || lower.endsWith(".tsx") || lower.endsWith(".mts") || lower.endsWith(".cts")) return "typescript";
+    if (lower.endsWith(".py") || lower.endsWith(".pyw")) return "python";
+    if (lower.endsWith(".html") || lower.endsWith(".htm")) return "html";
+    if (lower.endsWith(".css") || lower.endsWith(".scss")) return "css";
+    if (lower.endsWith(".md") || lower.endsWith(".markdown")) return "markdown";
+    if (lower.endsWith(".sh") || lower.endsWith(".bash") || lower.endsWith(".zsh")) return "shell";
+    if (lower.endsWith(".ps1") || lower.endsWith(".psm1")) return "powershell";
+    if (lower.endsWith(".sql")) return "sql";
+    if (lower.endsWith(".xml") || lower.endsWith(".svg")) return "xml";
+    if (lower.endsWith(".php")) return "php";
+    if (lower.endsWith(".go")) return "go";
+    if (lower.endsWith(".c") || lower.endsWith(".h")) return "c";
+    if (lower.endsWith(".cpp") || lower.endsWith(".hpp") || lower.endsWith(".cc")) return "cpp";
+    return fallback || "plaintext";
   }
 
   function simpleLineDiff(localText, diskText) {
@@ -88,9 +187,8 @@
     for (let i = 0; i < max; i += 1) {
       const la = a[i];
       const lb = b[i];
-      if (la === lb) {
-        out.push(`  ${la ?? ""}`);
-      } else {
+      if (la === lb) out.push(`  ${la ?? ""}`);
+      else {
         if (la !== undefined) out.push(`- ${la}`);
         if (lb !== undefined) out.push(`+ ${lb}`);
       }
@@ -104,28 +202,26 @@
     let sessionId = "";
     let workspaceKey = "default";
     let isOpen = false;
-    let layoutMode = "split"; // "split" | "editor-max" | "chat-max"
-    let widthPx = 520;
+    let layoutMode = "split";
+    let widthPx = 560;
+    let wordWrap = false;
+    let minimapEnabled = false;
     let tabs = [];
     let activePath = "";
-    let findOpen = false;
-    let findQuery = "";
-    let replaceQuery = "";
-    let findMatches = [];
-    let findIndex = 0;
     let saveTimer = null;
     let pollTimer = null;
     let dragPath = null;
-    let suppressInput = false;
+    let monacoApi = null;
+    let monacoInstance = null;
+    let monacoHostNode = null;
+    let suppressModelChange = false;
 
     const activeTab = () => tabs.find((t) => t.path === activePath) || null;
-
     const normalizePathKey = (p) =>
       String(p || "")
         .replace(/^\\\\\?\\/, "")
         .replace(/\\/g, "/")
         .toLowerCase();
-
     const samePath = (a, b) => Boolean(a && b && normalizePathKey(a) === normalizePathKey(b));
 
     const schedulePersist = () => {
@@ -171,66 +267,22 @@
       onLayoutChange?.({ isOpen, layoutMode, widthPx });
     };
 
-    const pushUndo = (tab, nextContent) => {
-      if (tab.content === nextContent) return;
-      tab.undoStack = tab.undoStack || [];
-      tab.redoStack = tab.redoStack || [];
-      tab.undoStack.push({
-        content: tab.content,
-        cursorStart: tab.cursorStart,
-        cursorEnd: tab.cursorEnd,
-      });
-      if (tab.undoStack.length > 100) tab.undoStack.shift();
-      tab.redoStack = [];
-    };
-
-    const applyEdit = (tab, nextContent, cursorStart, cursorEnd) => {
-      pushUndo(tab, nextContent);
-      tab.content = nextContent;
-      tab.dirty = tab.content !== tab.savedContent;
-      if (typeof cursorStart === "number") tab.cursorStart = cursorStart;
-      if (typeof cursorEnd === "number") tab.cursorEnd = cursorEnd;
-      schedulePersist();
-    };
-
-    const undo = () => {
-      const tab = activeTab();
-      if (!tab || !tab.undoStack?.length) return;
-      tab.redoStack = tab.redoStack || [];
-      tab.redoStack.push({
-        content: tab.content,
-        cursorStart: tab.cursorStart,
-        cursorEnd: tab.cursorEnd,
-      });
-      const prev = tab.undoStack.pop();
-      tab.content = prev.content;
-      tab.cursorStart = prev.cursorStart;
-      tab.cursorEnd = prev.cursorEnd;
-      tab.dirty = tab.content !== tab.savedContent;
-      schedulePersist();
-      paint();
-    };
-
-    const redo = () => {
-      const tab = activeTab();
-      if (!tab || !tab.redoStack?.length) return;
-      tab.undoStack = tab.undoStack || [];
-      tab.undoStack.push({
-        content: tab.content,
-        cursorStart: tab.cursorStart,
-        cursorEnd: tab.cursorEnd,
-      });
-      const next = tab.redoStack.pop();
-      tab.content = next.content;
-      tab.cursorStart = next.cursorStart;
-      tab.cursorEnd = next.cursorEnd;
-      tab.dirty = tab.content !== tab.savedContent;
-      schedulePersist();
-      paint();
+    const disposeMonaco = () => {
+      if (monacoInstance) {
+        try {
+          monacoInstance.dispose();
+        } catch (_) {}
+        monacoInstance = null;
+        monacoHostNode = null;
+      }
     };
 
     const saveTab = async (tab = activeTab(), force = false) => {
       if (!tab || tab.binary) return false;
+      if (tab.invalidEncoding && !tab.allowLossyConversion) {
+        toast("Non-UTF-8 file is read-only. Click 'Convert to UTF-8' in the banner first.", true);
+        return false;
+      }
       try {
         const res = await rpc("Editor", "saveFile", [
           {
@@ -259,7 +311,8 @@
         tab.mtimeMs = res.mtimeMs || tab.mtimeMs;
         tab.conflict = null;
         await persistNow();
-        paint();
+        updateDirtyUi(tab);
+        updateStatusBar(tab);
         toast(`Saved ${tab.name}`);
         return true;
       } catch (error) {
@@ -268,11 +321,38 @@
       }
     };
 
+    const updateDirtyUi = (tab) => {
+      const activeNode = host?.querySelector(".editor-tab.active");
+      if (!activeNode || !tab) return;
+      activeNode.classList.toggle("is-dirty", tab.dirty);
+      if (tab.dirty && !activeNode.querySelector(".editor-dirty-dot")) {
+        activeNode.insertBefore(
+          el("span", { class: "editor-dirty-dot", title: "Unsaved changes" }, "●"),
+          activeNode.querySelector(".editor-tab-close"),
+        );
+      } else if (!tab.dirty) {
+        activeNode.querySelector(".editor-dirty-dot")?.remove();
+      }
+    };
+
+    const updateStatusBar = (tab) => {
+      const status = host?.querySelector(".editor-status-meta");
+      if (status && tab) {
+        status.textContent = `${tab.language} · ${tab.encoding} · ${tab.lineEnding} · ${tab.dirty ? "Unsaved" : "Saved"}`;
+      }
+    };
+
     const closeTab = async (pathToClose) => {
       const idx = tabs.findIndex((t) => samePath(t.path, pathToClose));
       if (idx < 0) return;
       const tab = tabs[idx];
       const performClose = () => {
+        if (tab.monacoModel) {
+          try {
+            tab.monacoModel.dispose();
+          } catch (_) {}
+          tab.monacoModel = null;
+        }
         tabs.splice(idx, 1);
         if (samePath(activePath, pathToClose)) {
           activePath = tabs[Math.min(idx, tabs.length - 1)]?.path || "";
@@ -323,11 +403,7 @@
         const existing = opts.path
           ? tabs.find((t) => samePath(t.path, opts.path))
           : opts.sourceId && opts.relativePath !== undefined
-            ? tabs.find(
-                (t) =>
-                  t.sourceId === opts.sourceId &&
-                  t.relativePath === opts.relativePath,
-              )
+            ? tabs.find((t) => t.sourceId === opts.sourceId && t.relativePath === opts.relativePath)
             : null;
         if (existing) {
           activePath = existing.path;
@@ -336,6 +412,7 @@
           notifyLayout();
           schedulePersist();
           paint();
+          focusEditor();
           return existing;
         }
 
@@ -347,7 +424,7 @@
             path: opts.path || "",
           },
         ]);
-        if (res?.error && !res.binary) throw new Error(res.error);
+        if (res?.error && !res.binary && !res.invalidEncoding) throw new Error(res.error);
 
         const existingByResolved = tabs.find((t) => samePath(t.path, res.path));
         if (existingByResolved) {
@@ -357,20 +434,26 @@
           notifyLayout();
           schedulePersist();
           paint();
+          focusEditor();
           return existingByResolved;
         }
 
+        const lang = detectLanguageFromName(res.name || opts.name, res.language);
         const tab = {
           path: res.path,
           name: res.name || opts.name || "untitled",
           relativePath: res.relativePath || opts.relativePath || "",
           sourceId: opts.sourceId || "",
-          language: res.language || "plaintext",
+          language: lang,
           content: res.binary ? "" : res.content ?? "",
           savedContent: res.binary ? "" : res.content ?? "",
           dirty: false,
           binary: Boolean(res.binary),
           binaryMessage: res.binary ? res.error : "",
+          invalidEncoding: Boolean(res.invalidEncoding),
+          encodingWarning: res.invalidEncoding ? res.error : "",
+          allowLossyConversion: false,
+          readOnly: Boolean(res.readOnly),
           baseHash: res.hash || "",
           mtimeMs: res.mtimeMs || 0,
           lineEnding: res.lineEnding || "LF",
@@ -381,6 +464,7 @@
           undoStack: [],
           redoStack: [],
           conflict: null,
+          monacoModel: null,
         };
         tabs.push(tab);
         activePath = tab.path;
@@ -389,6 +473,7 @@
         notifyLayout();
         schedulePersist();
         paint();
+        focusEditor();
         return tab;
       } catch (error) {
         toast(error.message, true);
@@ -396,11 +481,17 @@
       }
     };
 
+    const focusEditor = () => {
+      if (monacoInstance) {
+        monacoInstance.focus();
+      } else {
+        host?.querySelector(".editor-input")?.focus();
+      }
+    };
+
     const handleExternalChange = async (payload) => {
       const targetPath = payload?.path;
-      const matched = targetPath
-        ? tabs.filter((t) => samePath(t.path, targetPath))
-        : tabs.slice();
+      const matched = targetPath ? tabs.filter((t) => samePath(t.path, targetPath)) : tabs.slice();
       for (const tab of matched) {
         if (tab.binary) continue;
         try {
@@ -416,6 +507,11 @@
               tab.mtimeMs = st.mtimeMs || tab.mtimeMs;
               tab.lineEnding = st.lineEnding || tab.lineEnding;
               tab.conflict = null;
+              if (tab.monacoModel) {
+                suppressModelChange = true;
+                tab.monacoModel.setValue(tab.content);
+                suppressModelChange = false;
+              }
               schedulePersist();
               paint();
               toast(`Reloaded ${tab.name} (updated on disk)`);
@@ -432,104 +528,176 @@
       }
     };
 
-    const recomputeFind = (tab) => {
-      findMatches = [];
-      if (!tab || !findQuery) {
-        findIndex = 0;
-        return;
-      }
-      const hay = tab.content.toLowerCase();
-      const needle = findQuery.toLowerCase();
-      let at = 0;
-      while (at < hay.length && findMatches.length < 1000) {
-        const pos = hay.indexOf(needle, at);
-        if (pos < 0) break;
-        findMatches.push(pos);
-        at = pos + Math.max(1, needle.length);
-      }
-      if (findIndex >= findMatches.length) findIndex = 0;
-    };
-
-    const jumpFind = (delta) => {
-      const tab = activeTab();
-      if (!tab || !findMatches.length) return;
-      findIndex = (findIndex + delta + findMatches.length) % findMatches.length;
-      const start = findMatches[findIndex];
-      const end = start + findQuery.length;
-      tab.cursorStart = start;
-      tab.cursorEnd = end;
-      paint();
-      const ta = host?.querySelector(".editor-input");
-      if (ta) {
-        ta.focus();
-        ta.setSelectionRange(start, end);
-      }
-    };
-
-    const replaceOne = () => {
-      const tab = activeTab();
-      if (!tab || !findMatches.length) return;
-      const start = findMatches[findIndex];
-      const end = start + findQuery.length;
-      const next = tab.content.slice(0, start) + replaceQuery + tab.content.slice(end);
-      applyEdit(tab, next, start, start + replaceQuery.length);
-      recomputeFind(tab);
-      paint();
-    };
-
-    const replaceAll = () => {
-      const tab = activeTab();
-      if (!tab || !findQuery) return;
-      const escaped = findQuery.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
-      const next = tab.content.replace(new RegExp(escaped, "gi"), replaceQuery);
-      applyEdit(tab, next, 0, 0);
-      recomputeFind(tab);
-      paint();
-    };
-
     const showDiffDialog = (tab) => {
       if (!tab?.conflict) return;
-      const diffText = simpleLineDiff(tab.content, tab.conflict.diskContent);
-      dialog(
-        `Diff: ${tab.name} (local vs disk)`,
-        el(
-          "div",
-          {},
+      const container = el("div", { class: "editor-diff-container" });
+      if (monacoApi?.editor?.createDiffEditor) {
+        const diffEl = el("div", { class: "editor-monaco-diff" });
+        container.append(
+          el("p", { class: "hint" }, "Left: Disk (AI/external) · Right: Your unsaved local edits"),
+          diffEl,
+        );
+        const d = dialog(`Diff: ${tab.name}`, container, { wide: true });
+        const diffEditor = monacoApi.editor.createDiffEditor(diffEl, {
+          theme: currentMonacoTheme(),
+          readOnly: true,
+          automaticLayout: true,
+          renderSideBySide: true,
+        });
+        const origModel = monacoApi.editor.createModel(tab.conflict.diskContent, tab.language);
+        const modModel = monacoApi.editor.createModel(tab.content, tab.language);
+        diffEditor.setModel({ original: origModel, modified: modModel });
+        d?.addEventListener?.("close", () => {
+          diffEditor.dispose();
+          origModel.dispose();
+          modModel.dispose();
+        });
+      } else {
+        const diffText = simpleLineDiff(tab.content, tab.conflict.diskContent);
+        dialog(
+          `Diff: ${tab.name} (local vs disk)`,
           el(
-            "p",
-            { class: "hint" },
-            "Lines starting with '-' are your unsaved local edits; lines starting with '+' are from disk.",
+            "div",
+            {},
+            el("p", { class: "hint" }, "Lines starting with '-' are local edits; '+' are from disk."),
+            el("pre", { class: "code-preview" }, diffText || "(no differences)"),
           ),
-          el("pre", { class: "code-preview" }, diffText || "(no differences)"),
-        ),
-        { wide: true },
-      );
+          { wide: true },
+        );
+      }
     };
 
-    const updateLineCol = (tab, ta) => {
-      const pos = ta?.selectionStart ?? tab.cursorStart ?? 0;
-      const before = tab.content.slice(0, pos);
-      const lines = before.split("\n");
-      const line = lines.length;
-      const col = lines[lines.length - 1].length + 1;
-      const badge = host?.querySelector(".editor-cursor-pos");
-      if (badge) badge.textContent = `Ln ${line}, Col ${col}`;
+    const attachMonaco = async (surfaceNode, tab) => {
+      if (!monacoApi) monacoApi = await loadMonaco();
+      if (!monacoApi || !surfaceNode.isConnected) {
+        attachTextareaFallback(surfaceNode, tab);
+        return;
+      }
+      if (!tab.monacoModel) {
+        const uri = monacoApi.Uri.file(tab.path);
+        const existingModel = monacoApi.editor.getModel(uri);
+        if (existingModel) {
+          tab.monacoModel = existingModel;
+          if (existingModel.getValue() !== tab.content) {
+            suppressModelChange = true;
+            existingModel.setValue(tab.content);
+            suppressModelChange = false;
+          }
+          monacoApi.editor.setModelLanguage(existingModel, tab.language);
+        } else {
+          tab.monacoModel = monacoApi.editor.createModel(tab.content, tab.language, uri);
+        }
+        tab.monacoModel.onDidChangeContent(() => {
+          if (suppressModelChange) return;
+          tab.content = tab.monacoModel.getValue();
+          tab.dirty = tab.content !== tab.savedContent;
+          updateDirtyUi(tab);
+          updateStatusBar(tab);
+          schedulePersist();
+        });
+      } else {
+        monacoApi.editor.setModelLanguage(tab.monacoModel, tab.language);
+      }
+
+      if (!monacoInstance || monacoHostNode !== surfaceNode) {
+        disposeMonaco();
+        monacoHostNode = surfaceNode;
+        monacoInstance = monacoApi.editor.create(surfaceNode, {
+          model: tab.monacoModel,
+          theme: currentMonacoTheme(),
+          language: tab.language,
+          readOnly: Boolean(tab.readOnly && !tab.allowLossyConversion),
+          automaticLayout: true,
+          fontSize: 13,
+          lineNumbers: "on",
+          minimap: { enabled: minimapEnabled },
+          wordWrap: wordWrap ? "on" : "off",
+          autoIndent: "full",
+          autoClosingBrackets: "always",
+          autoClosingQuotes: "always",
+          multiCursorModifier: "alt",
+          scrollBeyondLastLine: false,
+          tabSize: 2,
+        });
+        monacoInstance.addCommand(monacoApi.KeyMod.CtrlCmd | monacoApi.KeyCode.KeyS, () => {
+          void saveTab(activeTab());
+        });
+        monacoInstance.onDidChangeCursorPosition((ev) => {
+          const cur = activeTab();
+          if (!cur) return;
+          const posNode = host?.querySelector(".editor-cursor-pos");
+          if (posNode) posNode.textContent = `Ln ${ev.position.lineNumber}, Col ${ev.position.column}`;
+          const model = monacoInstance.getModel();
+          if (model) {
+            cur.cursorStart = model.getOffsetAt(ev.position);
+            cur.cursorEnd = cur.cursorStart;
+          }
+        });
+        monacoInstance.onDidScrollChange((ev) => {
+          const cur = activeTab();
+          if (cur) {
+            cur.scrollTop = ev.scrollTop;
+            schedulePersist();
+          }
+        });
+      } else {
+        monacoInstance.setModel(tab.monacoModel);
+        monacoInstance.updateOptions({
+          theme: currentMonacoTheme(),
+          readOnly: Boolean(tab.readOnly && !tab.allowLossyConversion),
+          minimap: { enabled: minimapEnabled },
+          wordWrap: wordWrap ? "on" : "off",
+        });
+      }
+      if (tab.scrollTop) monacoInstance.setScrollTop(tab.scrollTop);
+      if (tab.cursorStart) {
+        const pos = tab.monacoModel.getPositionAt(tab.cursorStart);
+        monacoInstance.setPosition(pos);
+      }
+      const pos = monacoInstance.getPosition();
+      const posNode = host?.querySelector(".editor-cursor-pos");
+      if (pos && posNode) posNode.textContent = `Ln ${pos.lineNumber}, Col ${pos.column}`;
+    };
+
+    const attachTextareaFallback = (surfaceNode, tab) => {
+      const ta = el("textarea", {
+        class: "editor-input editor-fallback-input",
+        spellcheck: "false",
+        readOnly: Boolean(tab.readOnly && !tab.allowLossyConversion),
+        "aria-label": `Editing ${tab.name}`,
+        onInput: (e) => {
+          tab.content = e.target.value;
+          tab.dirty = tab.content !== tab.savedContent;
+          tab.cursorStart = e.target.selectionStart || 0;
+          tab.cursorEnd = e.target.selectionEnd || 0;
+          updateDirtyUi(tab);
+          updateStatusBar(tab);
+          schedulePersist();
+        },
+        onKeydown: (e) => {
+          if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === "s") {
+            e.preventDefault();
+            void saveTab(tab);
+          }
+        },
+      });
+      ta.value = tab.content;
+      surfaceNode.replaceChildren(ta);
     };
 
     const paint = () => {
       if (!host) return;
       host.hidden = !isOpen || layoutMode === "chat-max";
       if (!isOpen) {
+        disposeMonaco();
         host.replaceChildren();
         return;
       }
 
       const tab = activeTab();
-      recomputeFind(tab);
-
       const tabNodes = tabs.map((t) => {
         const isActive = t.path === tab?.path;
-        const tabEl = el(
+        return el(
           "div",
           {
             class: "editor-tab" + (isActive ? " active" : "") + (t.dirty ? " is-dirty" : ""),
@@ -576,7 +744,6 @@
             "×",
           ),
         );
-        return tabEl;
       });
 
       const toolbar = el(
@@ -587,12 +754,28 @@
           "div",
           { class: "editor-actions" },
           button("Save", () => void saveTab(), "quiet", "check"),
-          ib("Undo", "back", undo),
-          ib("Redo", "arrow", redo),
           ib("Find & Replace", "search", () => {
-            findOpen = !findOpen;
-            paint();
+            if (monacoInstance) {
+              monacoInstance.focus();
+              monacoInstance.trigger("toolbar", "editor.action.startFindReplaceAction", null);
+            }
           }),
+          button(
+            wordWrap ? "Wrap: On" : "Wrap: Off",
+            () => {
+              wordWrap = !wordWrap;
+              paint();
+            },
+            "quiet",
+          ),
+          button(
+            minimapEnabled ? "Map: On" : "Map: Off",
+            () => {
+              minimapEnabled = !minimapEnabled;
+              paint();
+            },
+            "quiet",
+          ),
           button(
             layoutMode === "editor-max" ? "Split" : "Max Editor",
             () => {
@@ -622,51 +805,21 @@
         ),
       );
 
-      const findBar = findOpen
+      const encodingBanner = tab?.invalidEncoding && !tab.allowLossyConversion
         ? el(
             "div",
-            { class: "editor-find-bar" },
-            el("input", {
-              type: "search",
-              placeholder: "Find…",
-              value: findQuery,
-              onInput: (e) => {
-                findQuery = e.target.value;
-                recomputeFind(tab);
-                const cnt = host?.querySelector(".editor-find-count");
-                if (cnt) cnt.textContent = findMatches.length ? `${findIndex + 1}/${findMatches.length}` : "0/0";
+            { class: "editor-conflict-banner", role: "alert" },
+            el("span", {}, tab.encodingWarning || "Non-UTF-8 file opened read-only."),
+            button(
+              "Convert to UTF-8",
+              () => {
+                tab.allowLossyConversion = true;
+                tab.readOnly = false;
+                tab.encoding = "UTF-8 (converted)";
+                paint();
               },
-              onKeydown: (e) => {
-                if (e.key === "Enter") {
-                  e.preventDefault();
-                  jumpFind(e.shiftKey ? -1 : 1);
-                } else if (e.key === "Escape") {
-                  findOpen = false;
-                  paint();
-                }
-              },
-            }),
-            el("input", {
-              type: "text",
-              placeholder: "Replace…",
-              value: replaceQuery,
-              onInput: (e) => {
-                replaceQuery = e.target.value;
-              },
-            }),
-            el(
-              "span",
-              { class: "editor-find-count hint" },
-              findMatches.length ? `${findIndex + 1}/${findMatches.length}` : "0/0",
+              "primary",
             ),
-            button("Prev", () => jumpFind(-1), "quiet"),
-            button("Next", () => jumpFind(1), "quiet"),
-            button("Replace", replaceOne, "quiet"),
-            button("All", replaceAll, "quiet"),
-            ib("Close find", "close", () => {
-              findOpen = false;
-              paint();
-            }),
           )
         : null;
 
@@ -674,11 +827,7 @@
         ? el(
             "div",
             { class: "editor-conflict-banner", role: "alert" },
-            el(
-              "span",
-              {},
-              "Modified externally on disk (e.g. by AI) while you have unsaved edits.",
-            ),
+            el("span", {}, "Modified externally on disk (e.g. by AI) while you have unsaved edits."),
             el(
               "div",
               { class: "row" },
@@ -686,13 +835,17 @@
               button(
                 "Reload disk",
                 () => {
-                  pushUndo(tab, tab.conflict.diskContent);
                   tab.content = tab.conflict.diskContent;
                   tab.savedContent = tab.content;
                   tab.baseHash = tab.conflict.diskHash;
                   tab.mtimeMs = tab.conflict.diskMtimeMs;
                   tab.dirty = false;
                   tab.conflict = null;
+                  if (tab.monacoModel) {
+                    suppressModelChange = true;
+                    tab.monacoModel.setValue(tab.content);
+                    suppressModelChange = false;
+                  }
                   schedulePersist();
                   paint();
                 },
@@ -713,18 +866,16 @@
 
       let body;
       if (!tab) {
+        disposeMonaco();
         body = el(
           "div",
           { class: "editor-empty" },
           icon("file", 28),
           el("strong", {}, "No file open"),
-          el(
-            "p",
-            { class: "hint" },
-            "Double-click any file in the Explorer to edit it here alongside your AI conversation.",
-          ),
+          el("p", { class: "hint" }, "Double-click any file in the Explorer to edit it here."),
         );
       } else if (tab.binary) {
+        disposeMonaco();
         body = el(
           "div",
           { class: "editor-empty" },
@@ -733,114 +884,7 @@
           el("p", { class: "error-text" }, tab.binaryMessage || "Binary file cannot be edited as text."),
         );
       } else {
-        const lineCount = Math.max(1, tab.content.split("\n").length);
-        const gutter = el(
-          "div",
-          { class: "editor-gutter", "aria-hidden": "true" },
-          Array.from({ length: lineCount }, (_, i) => String(i + 1)).join("\n"),
-        );
-        const highlight = el("pre", { class: "editor-highlight", "aria-hidden": "true" });
-        highlight.innerHTML = highlightCode(tab.content, tab.language);
-        const ta = el("textarea", {
-          class: "editor-input",
-          spellcheck: "false",
-          wrap: "off",
-          "aria-label": `Editing ${tab.name}`,
-          onInput: (e) => {
-            if (suppressInput) return;
-            const next = e.target.value;
-            tab.cursorStart = e.target.selectionStart || 0;
-            tab.cursorEnd = e.target.selectionEnd || 0;
-            applyEdit(tab, next, tab.cursorStart, tab.cursorEnd);
-            highlight.innerHTML = highlightCode(next, tab.language);
-            const lc = Math.max(1, next.split("\n").length);
-            gutter.textContent = Array.from({ length: lc }, (_, i) => String(i + 1)).join("\n");
-            const activeNode = host?.querySelector(".editor-tab.active");
-            if (activeNode) {
-              activeNode.classList.toggle("is-dirty", tab.dirty);
-              if (tab.dirty && !activeNode.querySelector(".editor-dirty-dot")) {
-                activeNode.insertBefore(
-                  el("span", { class: "editor-dirty-dot", title: "Unsaved changes" }, "●"),
-                  activeNode.querySelector(".editor-tab-close"),
-                );
-              } else if (!tab.dirty) {
-                activeNode.querySelector(".editor-dirty-dot")?.remove();
-              }
-            }
-            updateLineCol(tab, e.target);
-          },
-          onScroll: (e) => {
-            tab.scrollTop = e.target.scrollTop;
-            gutter.scrollTop = e.target.scrollTop;
-            highlight.scrollTop = e.target.scrollTop;
-            highlight.scrollLeft = e.target.scrollLeft;
-            schedulePersist();
-          },
-          onClick: (e) => {
-            tab.cursorStart = e.target.selectionStart || 0;
-            tab.cursorEnd = e.target.selectionEnd || 0;
-            updateLineCol(tab, e.target);
-            schedulePersist();
-          },
-          onKeyup: (e) => {
-            tab.cursorStart = e.target.selectionStart || 0;
-            tab.cursorEnd = e.target.selectionEnd || 0;
-            updateLineCol(tab, e.target);
-          },
-          onKeydown: (e) => {
-            const mod = e.ctrlKey || e.metaKey;
-            if (mod && e.key.toLowerCase() === "s") {
-              e.preventDefault();
-              void saveTab(tab);
-              return;
-            }
-            if (mod && e.key.toLowerCase() === "f") {
-              e.preventDefault();
-              findOpen = true;
-              paint();
-              return;
-            }
-            if (mod && e.key.toLowerCase() === "z") {
-              e.preventDefault();
-              if (e.shiftKey) redo();
-              else undo();
-              return;
-            }
-            if (mod && e.key.toLowerCase() === "y") {
-              e.preventDefault();
-              redo();
-              return;
-            }
-            if (e.key === "Tab") {
-              e.preventDefault();
-              const start = e.target.selectionStart;
-              const end = e.target.selectionEnd;
-              const next = tab.content.slice(0, start) + TEXT_TAB + tab.content.slice(end);
-              suppressInput = true;
-              e.target.value = next;
-              e.target.setSelectionRange(start + TEXT_TAB.length, start + TEXT_TAB.length);
-              suppressInput = false;
-              applyEdit(tab, next, start + TEXT_TAB.length, start + TEXT_TAB.length);
-              highlight.innerHTML = highlightCode(next, tab.language);
-            }
-          },
-        });
-        ta.value = tab.content;
-        queueMicrotask(() => {
-          ta.scrollTop = tab.scrollTop || 0;
-          gutter.scrollTop = tab.scrollTop || 0;
-          highlight.scrollTop = tab.scrollTop || 0;
-          try {
-            ta.setSelectionRange(tab.cursorStart || 0, tab.cursorEnd || 0);
-          } catch (_) {}
-          updateLineCol(tab, ta);
-        });
-        body = el(
-          "div",
-          { class: "editor-surface" },
-          gutter,
-          el("div", { class: "editor-code-stack" }, highlight, ta),
-        );
+        body = el("div", { class: "editor-surface editor-monaco-host" });
       }
 
       const status = el(
@@ -850,24 +894,37 @@
         tab
           ? el(
               "span",
-              { class: "hint" },
+              { class: "editor-status-meta hint" },
               `${tab.language} · ${tab.encoding} · ${tab.lineEnding} · ${tab.dirty ? "Unsaved" : "Saved"}`,
             )
-          : el("span", { class: "hint" }, "Ready"),
+          : el("span", { class: "editor-status-meta hint" }, "Ready"),
       );
 
-      host.replaceChildren(
-        el("div", { class: "editor-shell" }, toolbar, findBar, conflictBanner, body, status),
-      );
+      // Preserve live Monaco host node if switching tabs without destroying editor instance
+      const existingShell = host.querySelector(".editor-shell");
+      const existingMonacoHost = existingShell?.querySelector(".editor-monaco-host");
+      if (tab && !tab.binary && existingShell && existingMonacoHost && monacoInstance && monacoHostNode === existingMonacoHost) {
+        existingShell.querySelector(".editor-toolbar")?.replaceWith(toolbar);
+        existingShell.querySelectorAll(".editor-conflict-banner").forEach((n) => n.remove());
+        if (encodingBanner) existingMonacoHost.before(encodingBanner);
+        if (conflictBanner) existingMonacoHost.before(conflictBanner);
+        existingShell.querySelector(".editor-statusbar")?.replaceWith(status);
+        void attachMonaco(existingMonacoHost, tab);
+      } else {
+        host.replaceChildren(
+          el("div", { class: "editor-shell" }, toolbar, encodingBanner, conflictBanner, body, status),
+        );
+        if (tab && !tab.binary) {
+          void attachMonaco(body, tab);
+        }
+      }
     };
 
     const startPoll = () => {
       clearInterval(pollTimer);
       pollTimer = setInterval(() => {
         if (!isOpen || !tabs.length || document.hidden) return;
-        for (const t of tabs) {
-          void handleExternalChange({ path: t.path });
-        }
+        for (const t of tabs) void handleExternalChange({ path: t.path });
       }, STAT_POLL_MS);
     };
 
@@ -884,7 +941,7 @@
         if (!saved || saved.error) return;
         isOpen = Boolean(saved.isOpen);
         layoutMode = saved.layoutMode || "split";
-        widthPx = Number(saved.widthPx) || 520;
+        widthPx = Number(saved.widthPx) || 560;
         const restored = [];
         for (const t of saved.tabs || []) {
           if (!t.path) continue;
@@ -896,12 +953,16 @@
             name: t.name || disk?.name || "file",
             relativePath: t.relativePath || "",
             sourceId: t.sourceId || "",
-            language: t.language || disk?.language || "plaintext",
+            language: detectLanguageFromName(t.name || disk?.name, t.language || disk?.language),
             content: useDraft ? t.draftContent : diskContent,
             savedContent: diskContent,
             dirty: useDraft && t.draftContent !== diskContent,
             binary: Boolean(disk?.binary),
             binaryMessage: disk?.binary ? disk.error : "",
+            invalidEncoding: Boolean(disk?.invalidEncoding),
+            encodingWarning: disk?.invalidEncoding ? disk.error : "",
+            allowLossyConversion: false,
+            readOnly: Boolean(disk?.readOnly),
             baseHash: t.baseHash || disk?.hash || "",
             mtimeMs: disk?.mtimeMs || 0,
             lineEnding: t.lineEnding || disk?.lineEnding || "LF",
@@ -912,6 +973,7 @@
             undoStack: [],
             redoStack: [],
             conflict: null,
+            monacoModel: null,
           });
         }
         tabs = restored;
@@ -943,7 +1005,7 @@
         paint();
       },
       setWidth(w) {
-        widthPx = Math.max(300, Math.min(1200, Number(w) || 520));
+        widthPx = Math.max(320, Math.min(1200, Number(w) || 560));
         notifyLayout();
         schedulePersist();
       },
@@ -959,9 +1021,15 @@
       dispose() {
         clearTimeout(saveTimer);
         clearInterval(pollTimer);
+        disposeMonaco();
+        for (const t of tabs) {
+          try {
+            t.monacoModel?.dispose();
+          } catch (_) {}
+        }
       },
     };
   }
 
-  window.TsEditorPanel = { create, highlightCode };
+  window.TsEditorPanel = { create, detectLanguageFromName };
 })();
