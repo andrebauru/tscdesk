@@ -214,8 +214,8 @@ impl QuixiEngine {
             default_space_id.clone(),
             CoworkSpace {
                 id: default_space_id,
-                name: "QuixiDesk Workspace".to_string(),
-                description: "Primary QuixiDesk engineering workspace".to_string(),
+                name: "TsCIDE Workspace".to_string(),
+                description: "Primary TsCIDE engineering workspace".to_string(),
                 instructions: String::new(),
                 icon: "folder".to_string(),
                 color: "clay".to_string(),
@@ -223,7 +223,7 @@ impl QuixiEngine {
                 updated_at: now_ms,
                 folders: vec![CoworkSpaceFolder {
                     path: default_workspace.clone(),
-                    name: "quixi-desk".to_string(),
+                    name: "tscide".to_string(),
                     added_at: now_ms,
                 }],
                 links: vec![],
@@ -234,11 +234,11 @@ impl QuixiEngine {
         let default_plugins = vec![json!({
             "id": "quixi-core",
             "name": "quixi-core",
-            "displayName": "QuixiDesk Core Tools",
+            "displayName": "TsCIDE Core Tools",
             "installPath": data_dir.join("plugins/quixi-core").to_string_lossy(),
             "scope": "user",
             "enabled": true,
-            "description": "Built-in QuixiDesk workspace, git, and document skills plugin",
+            "description": "Built-in TsCIDE workspace, git, and document skills plugin",
             "version": env!("CARGO_PKG_VERSION"),
             "skills": [],
             "commands": [],
@@ -249,7 +249,7 @@ impl QuixiEngine {
 
         let default_marketplaces = vec![json!({
             "name": "quixi-marketplace",
-            "displayName": "QuixiDesk Official Marketplace",
+            "displayName": "TsCIDE Official Marketplace",
             "sourceType": "remote",
             "lastRefreshedAt": now_ms,
             "isDefault": true,
@@ -2338,7 +2338,7 @@ impl QuixiEngine {
                 let name = body_json
                     .get("name")
                     .and_then(|v| v.as_str())
-                    .unwrap_or("New QuixiDesk Project");
+                    .unwrap_or("New TsCIDE Project");
                 let desc = body_json
                     .get("description")
                     .and_then(|v| v.as_str())
@@ -2355,7 +2355,7 @@ impl QuixiEngine {
                     "updated_at": now,
                     "creator": {
                         "uuid": "00000000-0000-4000-8000-000000000002",
-                        "full_name": "QuixiDesk"
+                        "full_name": "TsCIDE"
                     }
                 });
                 self.projects.write().insert(uuid, proj.clone());
@@ -2386,7 +2386,7 @@ impl QuixiEngine {
             let entry = projects.entry(proj_uuid.to_string()).or_insert_with(|| {
                 json!({
                     "uuid": proj_uuid,
-                    "name": "QuixiDesk Project",
+                    "name": "TsCIDE Project",
                     "description": "",
                     "is_private": true,
                     "is_starter_project": false,
@@ -2395,7 +2395,7 @@ impl QuixiEngine {
                     "updated_at": now,
                     "creator": {
                         "uuid": "00000000-0000-4000-8000-000000000002",
-                        "full_name": "QuixiDesk"
+                        "full_name": "TsCIDE"
                     }
                 })
             });
@@ -2424,7 +2424,7 @@ impl QuixiEngine {
             200,
             &json!({
                 "uuid": proj_uuid,
-                "name": "QuixiDesk Project",
+                "name": "TsCIDE Project",
                 "description": "",
                 "is_private": true,
                 "created_at": now,

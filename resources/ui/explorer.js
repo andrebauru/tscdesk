@@ -300,19 +300,42 @@
         isDir ? null : el("small", { class: "explorer-size" }, formatBytes(entry.size)),
       );
 
-      name.addEventListener("click", () => {
-        if (isDir) caret.click();
-        else void previewFile(source, entry.relativePath, entry.name);
+      name.addEventListener("click", (event) => {
+        if (isDir) {
+          caret.click();
+          return;
+        }
+        if (openFileHandler) {
+          event.stopPropagation();
+          host
+            ?.querySelectorAll(".explorer-row.is-selected")
+            .forEach((node) => node.classList.remove("is-selected"));
+          row.classList.add("is-selected");
+          return;
+        }
+        void previewFile(source, entry.relativePath, entry.name);
       });
-      if (!isDir && openFileHandler) {
+      if (!isDir) {
+        row.addEventListener("click", () => {
+          if (!openFileHandler) return;
+          host
+            ?.querySelectorAll(".explorer-row.is-selected")
+            .forEach((node) => node.classList.remove("is-selected"));
+          row.classList.add("is-selected");
+        });
         row.addEventListener("dblclick", (event) => {
           event.stopPropagation();
-          void openFileHandler({
-            source,
-            sourceId: source.id,
-            relativePath: entry.relativePath,
-            name: entry.name,
-          });
+          if (openFileHandler) {
+            void openFileHandler({
+              sessionId: session?.sessionId,
+              source,
+              sourceId: source.id,
+              relativePath: entry.relativePath,
+              name: entry.name,
+            });
+          } else {
+            void previewFile(source, entry.relativePath, entry.name);
+          }
         });
       }
 

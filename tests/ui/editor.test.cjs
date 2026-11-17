@@ -283,6 +283,95 @@ test("persists open tabs, active tab, layout, and unsaved drafts across restart"
   assert.equal(st.tabs[1].dirty, true);
 });
 
+test("Explorer single-click selects without modal and double-click automatically opens Editor", async (t) => {
+  const f = createFixture();
+  t.after(() => f.panel.dispose());
+
+  const expHost = f.window.document.createElement("div");
+  f.window.document.body.append(expHost);
+  const expRpc = async (service, member, args = []) => {
+    const body = args[0] || {};
+    if (service === "Explorer" && member === "getState") {
+      return {
+        version: 1,
+        sessionId: body.sessionId,
+        preferences: { showHidden: false, showIgnored: false, extraExcludes: [] },
+        sources: [
+          {
+            id: "src-1",
+            kind: "folder",
+            path: "/ws",
+            label: "ws",
+            projectKind: "git",
+            selected: false,
+            selectedPaths: [],
+            deselectedPaths: [],
+            expanded: [],
+            missing: false,
+          },
+        ],
+        selectedFiles: 0,
+      };
+    }
+    if (service === "Explorer" && member === "listDirectory") {
+      return {
+        entries: [
+          {
+            name: "TESTE_RUNPOD.txt",
+            relativePath: "TESTE_RUNPOD.txt",
+            isDir: false,
+            size: 37,
+            checked: false,
+            partial: false,
+          },
+        ],
+        truncated: false,
+      };
+    }
+    if (service === "Explorer" && member === "contextPreview") {
+      return { selectedFiles: 0, estimatedChars: 0, budgetChars: 200000, exceedsBudget: false };
+    }
+    return f.rpc(service, member, args);
+  };
+
+  const explorerPanel = f.window.TsExplorerPanel.create({
+    el: f.el,
+    button: f.button,
+    ib: f.ib,
+    icon: f.icon,
+    toast: (text, err) => f.toasts.push({ text, err }),
+    rpc: expRpc,
+    dialog: f.dialog,
+    onOpenFile: async (info) => {
+      f.panel.setSession(info.sessionId || "sess-1");
+      f.panel.setOpen(true);
+      await f.panel.openFile(info);
+    },
+  });
+  t.after(() => explorerPanel.dispose());
+
+  await explorerPanel.render(expHost, { sessionId: "sess-1", title: "Test" }, { projectName: "TsCIDE Workspace" });
+  await settle();
+
+  const fileRow = expHost.querySelector(".explorer-row:not(.is-dir)");
+  const fileName = fileRow.querySelector(".explorer-name");
+  assert.equal(f.editorPane.hidden, true);
+
+  // Single click selects without opening modal dialog
+  fileName.dispatchEvent(new f.window.MouseEvent("click", { bubbles: true }));
+  await settle();
+  assert.ok(fileRow.classList.contains("is-selected"));
+  assert.equal(f.dialogs.length, 0);
+
+  // Double click opens the editor automatically
+  fileRow.dispatchEvent(new f.window.MouseEvent("dblclick", { bubbles: true }));
+  await settle();
+  assert.equal(f.editorPane.hidden, false);
+  assert.equal(f.panel.getState().isOpen, true);
+  assert.equal(f.panel.getState().tabs.length, 1);
+  assert.equal(f.editorPane.querySelector(".editor-input").value, "RUNPOD EXECUTOU A ESCRITA COM SUCESSO");
+});
+
 function windowTsPanelClone(f) {
   const pane2 = f.window.document.createElement("aside");
   f.window.document.body.append(pane2);

@@ -932,7 +932,8 @@
   async function openFileInEditor(info) {
     if (!editorPanel) return;
     const s = session();
-    editorPanel.setSession(s ? s.sessionId : explorerDraftId());
+    editorPanel.setSession(info?.sessionId || (s ? s.sessionId : explorerDraftId()));
+    editorPanel.setOpen(true);
     await editorPanel.openFile(info);
   }
   function sessionWorkspaceFolders(s) {

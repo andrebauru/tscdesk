@@ -721,7 +721,7 @@ impl EipcRouter {
             ("Account", "setAccountDetails") => Value::Null,
 
             // --- AboutWindow, QuickWindow, MainWindowTitleBar ---
-            ("AboutWindow", "getAppName") => json!("QuixiDesk"),
+            ("AboutWindow", "getAppName") => json!("TsCIDE"),
             ("AboutWindow", "getBuildProps") => json!({
                 "commitHash": "20c019a1e61fa5b687616af57d31f97bb3181723",
                 "isNestBuild": false,
@@ -2668,7 +2668,7 @@ impl EipcRouter {
                 "entries": [
                     {
                         "id": "default",
-                        "name": "QuixiDesk Default",
+                        "name": "TsCIDE Default",
                         "provider": "anthropic"
                     }
                 ],
@@ -2679,7 +2679,7 @@ impl EipcRouter {
                 "ok": true,
                 "config": {
                     "deploymentMode": "3p",
-                    "deploymentDisplayName": "QuixiDesk"
+                    "deploymentDisplayName": "TsCIDE"
                 }
             }),
             ("Custom3pSetup", "signInWithAnthropicApi") | ("Custom3pApiKeySignIn", "signIn") => {
@@ -3162,7 +3162,7 @@ mod tests {
             })
             .result
             .unwrap();
-        assert_eq!(app_name, json!("QuixiDesk"));
+        assert_eq!(app_name, json!("TsCIDE"));
 
         // 3. CoworkSpaces.getAllSpaces
         let spaces = router
@@ -3176,7 +3176,7 @@ mod tests {
             .result
             .unwrap();
         assert!(spaces.is_array());
-        assert_eq!(spaces[0]["name"], "QuixiDesk Workspace");
+        assert_eq!(spaces[0]["name"], "TsCIDE Workspace");
 
         // 4. Bundled skills via LocalAgentModeSessions.listLocalSkills
         let skills = router
@@ -3202,7 +3202,7 @@ mod tests {
             })
             .result
             .unwrap();
-        assert_eq!(managed["deploymentDisplayName"], "QuixiDesk");
+        assert_eq!(managed["deploymentDisplayName"], "TsCIDE");
     }
 
     #[test]
@@ -3218,7 +3218,7 @@ mod tests {
         assert_eq!(status, 200);
         assert!(ct.contains("application/json"));
         let boot_json: Value = serde_json::from_slice(&body).unwrap();
-        assert_eq!(boot_json["account"]["display_name"], "QuixiDesk");
+        assert_eq!(boot_json["account"]["display_name"], "TsCIDE");
 
         // 2. /api/organizations/*/chat_conversations/*/completion SSE
         let req_body = serde_json::to_vec(&json!({

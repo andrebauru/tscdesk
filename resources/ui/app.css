@@ -2363,6 +2363,7 @@ input[type="radio"] {
 .explorer-branch { display: flex; flex-direction: column; }
 .explorer-row { display: flex; align-items: center; gap: 6px; padding: 3px 8px 3px calc(8px + (var(--depth, 0) * 14px)); min-height: 25px; font-size: 12.5px; color: var(--text); border-left: 2px solid transparent; user-select: none; }
 .explorer-row:hover { background: color-mix(in srgb, var(--accent) 10%, transparent); }
+.explorer-row.is-selected { background: color-mix(in srgb, var(--accent) 18%, transparent); outline: 1px solid color-mix(in srgb, var(--accent) 45%, transparent); }
 .explorer-row.is-in-context { background: color-mix(in srgb, var(--accent) 11%, transparent); border-left-color: var(--accent); }
 .explorer-row.is-partial-context { border-left-color: color-mix(in srgb, var(--accent) 55%, transparent); }
 .explorer-row.is-dir .explorer-name { font-weight: 600; color: var(--text); }
