@@ -41,7 +41,12 @@
     collab: new Map(),
     jobs: new Map(),
     draftPlanMode: false,
-    dockTab: "files",
+    dockTab: "explorer",
+    dockOpen: true,
+    dockWidth: (() => {
+      const saved = Number(localStorage.getItem("tscide.dockWidth"));
+      return Number.isFinite(saved) && saved >= 250 && saved <= 640 ? saved : 310;
+    })(),
     collapsed: localStorage.getItem("quixi.sidebar") === "closed",
     settingsTab: "general",
   };
@@ -197,15 +202,16 @@
   function draftKey() {
     return state.page === "chat" ? state.id : "new:" + (state.project || "personal");
   }
+  const explorerDraftIds = new Map();
   function explorerDraftKey() {
     return "quixi.explorerDraft:" + (state.project || "personal");
   }
   function explorerDraftId() {
     const key = explorerDraftKey();
-    let id = localStorage.getItem(key);
+    let id = localStorage.getItem(key) || explorerDraftIds.get(key);
     if (!id) {
       id = "draft-" + crypto.randomUUID();
-      localStorage.setItem(key, id);
+      explorerDraftIds.set(key, id);
     }
     return id;
   }
@@ -717,11 +723,6 @@
           ),
         ),
       ),
-      el("div", {
-        class: "sidebar-explorer",
-        id: "sidebar-explorer",
-        "aria-label": "Workspace Explorer",
-      }),
       el("div", { class: "recent", id: "recents" }),
       el(
         "footer",
@@ -775,6 +776,18 @@
         "quiet",
       ),
       button("Editor", () => toggleEditorPane(), "quiet", "file"),
+      el(
+        "button",
+        {
+          type: "button",
+          id: "topbar-explorer-toggle",
+          class: "quiet" + (state.dockOpen ? " is-active" : ""),
+          "aria-pressed": String(Boolean(state.dockOpen)),
+          onClick: () => void toggleContextDock("explorer"),
+        },
+        icon("folder", 18),
+        "Explorer",
+      ),
       ib("Toggle TsCIDE Browser", "browser", () => toggleBrowser()),
     );
     const editorResizer = el("div", {
@@ -792,13 +805,14 @@
     const contextResizer = el("div", {
       id: "context-resizer",
       class: "editor-resizer",
-      hidden: true,
+      hidden: !state.dockOpen,
       "aria-hidden": "true",
     });
     const contextDockHost = el("div", {
       id: "context-dock-host",
       class: "context-dock-host",
-      hidden: true,
+      hidden: !state.dockOpen,
+      style: state.dockWidth ? `width:${state.dockWidth}px` : "",
       "aria-label": "Explorer and Context",
     });
     const workspaceSplit = el(
@@ -883,7 +897,8 @@
         ),
       );
   }
-  let sidebarExplorerPanel = null;
+  let dockExplorerPanel = null;
+  let dockRenderSeq = 0;
   let editorPanel = null;
   function applyEditorLayout(layout) {
     const split = document.getElementById("workspace-split");
@@ -940,11 +955,13 @@
         ctxResizer.classList.add("is-dragging");
         const onMove = (moveEvent) => {
           const rect = split.getBoundingClientRect();
-          const w = Math.max(260, Math.min(640, rect.right - moveEvent.clientX));
+          const w = Math.max(250, Math.min(640, rect.right - moveEvent.clientX));
+          state.dockWidth = w;
           ctxHost.style.width = `${w}px`;
         };
         const onUp = () => {
           ctxResizer.classList.remove("is-dragging");
+          if (state.dockWidth) localStorage.setItem("tscide.dockWidth", String(Math.round(state.dockWidth)));
           window.removeEventListener("mousemove", onMove);
           window.removeEventListener("mouseup", onUp);
         };
@@ -982,29 +999,6 @@
     if (cur && !folders.includes(cur)) folders.push(cur);
     return folders;
   }
-  function renderSidebarExplorer() {
-    const target = document.getElementById("sidebar-explorer");
-    if (!target || !window.TsExplorerPanel?.create) return;
-    sidebarExplorerPanel?.dispose();
-    sidebarExplorerPanel = window.TsExplorerPanel.create({
-      el,
-      button,
-      ib,
-      icon,
-      toast,
-      rpc,
-      dialog,
-      onOpenFile: (info) => void openFileInEditor(info),
-    });
-    const s = session();
-    const explorerContext = s || { sessionId: explorerDraftId(), title: "New conversation" };
-    void sidebarExplorerPanel.render(target, explorerContext, {
-      projectName: project()?.name || "No project",
-      workspaceFolders: sessionWorkspaceFolders(s),
-      compact: true,
-      onOpenFile: (info) => void openFileInEditor(info),
-    });
-  }
   async function openFolderInExplorer() {
     try {
       const path = await rpc("FileSystem", "browseFolder", ["Open project or folder in Explorer"]);
@@ -1015,10 +1009,10 @@
       if (!s) {
         state.folder = path;
         if (!state.taskFolders.includes(path)) state.taskFolders.push(path);
+        localStorage.setItem(explorerDraftKey(), targetSessionId);
       }
-      renderSidebarExplorer();
       void editorPanel?.loadWorkspace(targetSessionId, currentWorkspaceKey());
-      if (document.querySelector(".drawer.workspace-dock")) void contextDrawer("explorer");
+      await openContextDock("explorer");
     } catch (error) {
       toast(error.message, true);
     }
@@ -1038,7 +1032,7 @@
       settings: settingsPage,
     };
     handlers[state.page]?.(host);
-    renderSidebarExplorer();
+    void syncContextDock();
     const s = session();
     void editorPanel?.loadWorkspace(s ? s.sessionId : explorerDraftId(), currentWorkspaceKey());
     updateAgentControls();
@@ -1123,8 +1117,7 @@
           button("Open Folder", () => openFolderInExplorer(), "quiet", "folder"),
           currentFolder() ? button("Open in…", () => openInDialog(s), "quiet", "folder") : null,
           button("Find in conversation", () => openConversationFind(), "quiet", "search"),
-          button("Explorer", () => contextDrawer("explorer"), "quiet", "folder"),
-          button("Files & context", () => contextDrawer(), "quiet"),
+          button("Files & context", () => openContextDock(), "quiet"),
           ib("Delete conversation", "trash", () => deleteSession(s)),
           ib("Task actions", "more", () => sessionMenu(s)),
         ),
@@ -1196,8 +1189,7 @@
             "div",
             { class: "welcome-actions" },
             button("Open Folder", () => openFolderInExplorer(), "quiet", "folder"),
-            button("Open Explorer", () => contextDrawer("explorer"), "quiet", "folder"),
-            el("small", { class: "hint" }, "Choose folders or files and the exact context for this new conversation."),
+            el("small", { class: "hint" }, "Choose folders or files in the Explorer on the right for this conversation."),
           ),
         ),
       );
@@ -1714,11 +1706,12 @@
         s._kind = "task";
         state.sessions.unshift(s);
         const draftExplorerKey = explorerDraftKey();
-        const draftExplorer = localStorage.getItem(draftExplorerKey);
+        const draftExplorer = localStorage.getItem(draftExplorerKey) || explorerDraftIds.get(draftExplorerKey);
         if (draftExplorer) {
           try {
             await rpc("Explorer", "transferContext", [{ from: draftExplorer, to: s.sessionId }]);
             localStorage.removeItem(draftExplorerKey);
+            explorerDraftIds.delete(draftExplorerKey);
           } catch (_) {}
         }
         if (state.draftPlanMode) {
@@ -5443,13 +5436,55 @@
     if (data.type === "quixi-browser-navigate" && typeof data.url === "string")
       browserAction("navigate", { url: data.url });
   });
+  function updateExplorerToggleButton() {
+    const btn = document.getElementById("topbar-explorer-toggle");
+    if (!btn) return;
+    btn.classList.toggle("is-active", Boolean(state.dockOpen));
+    btn.setAttribute("aria-pressed", String(Boolean(state.dockOpen)));
+  }
+  function closeContextDock() {
+    state.dockOpen = false;
+    dockRenderSeq++;
+    dockExplorerPanel?.dispose();
+    dockExplorerPanel = null;
+    const dockHost = document.getElementById("context-dock-host");
+    const ctxResizer = document.getElementById("context-resizer");
+    dockHost?.querySelector(".drawer")?.remove();
+    if (dockHost) dockHost.hidden = true;
+    if (ctxResizer) ctxResizer.hidden = true;
+    updateExplorerToggleButton();
+  }
+  async function openContextDock(initialTab) {
+    state.dockOpen = true;
+    if (initialTab) state.dockTab = initialTab;
+    updateExplorerToggleButton();
+    await contextDrawer(initialTab);
+  }
+  function toggleContextDock(initialTab = "explorer") {
+    if (state.dockOpen) {
+      closeContextDock();
+      return Promise.resolve();
+    }
+    return openContextDock(initialTab);
+  }
+  async function syncContextDock() {
+    if (!state.dockOpen) return;
+    await contextDrawer(state.dockTab || "explorer");
+  }
   async function contextDrawer(initialTab) {
+    const seq = ++dockRenderSeq;
     const dockHost = document.getElementById("context-dock-host") || document.getElementById("page-host");
     const ctxResizer = document.getElementById("context-resizer");
-    dockHost.querySelector(".drawer")?.remove();
+    if (!dockHost) return;
     const s = session();
-    if (!s && initialTab !== "explorer") return;
+    if (!s && initialTab && initialTab !== "explorer") return;
+    state.dockOpen = true;
+    updateExplorerToggleButton();
     if (initialTab) state.dockTab = initialTab;
+    else if (!s) state.dockTab = "explorer";
+    dockExplorerPanel?.dispose();
+    dockExplorerPanel = null;
+    dockHost.querySelector(".drawer")?.remove();
     const explorerContext = s || { sessionId: explorerDraftId(), title: "New conversation" };
     const explorerPanel = window.TsExplorerPanel?.create({
       el,
@@ -5461,6 +5496,7 @@
       dialog,
       onOpenFile: (info) => void openFileInEditor(info),
     });
+    dockExplorerPanel = explorerPanel || null;
     const folder = s?.cwd || currentFolder();
     const tabContent = el("div", { class: "dock-body" });
     const tabsBar = el("div", { class: "dock-tabs", role: "tablist" });
@@ -5475,10 +5511,7 @@
         el("h3", { class: "grow" }, "Files & context"),
         ib("Close context", "close", () => {
           stopTermPoll();
-          explorerPanel?.dispose();
-          drawer.remove();
-          if (dockHost.id === "context-dock-host") dockHost.hidden = true;
-          if (ctxResizer) ctxResizer.hidden = true;
+          closeContextDock();
         }),
       ),
       tabsBar,
@@ -5652,10 +5685,21 @@
       tabContent.replaceChildren(fragment);
     }
 
+    if (seq !== dockRenderSeq || !state.dockOpen) {
+      explorerPanel?.dispose();
+      return;
+    }
     dockHost.append(drawer);
-    if (dockHost.id === "context-dock-host") dockHost.hidden = false;
+    if (dockHost.id === "context-dock-host") {
+      dockHost.hidden = false;
+      if (state.dockWidth) dockHost.style.width = `${state.dockWidth}px`;
+    }
     if (ctxResizer) ctxResizer.hidden = false;
     await renderDockTab();
+    if (seq !== dockRenderSeq || !state.dockOpen) {
+      drawer.remove();
+      explorerPanel?.dispose();
+    }
   }
   const refreshTimers = new Map();
   let streamFrame = null;
@@ -5770,6 +5814,9 @@
       scheduleAgentPoll();
       state.folder = ""; // A new conversation has no implicit access to the source checkout.
       state.taskFolders = [];
+      // Always open the right-hand Explorer on startup, overriding any legacy closed state.
+      state.dockOpen = true;
+      state.dockTab = "explorer";
       const path = decodeURIComponent(location.pathname.slice(1));
       navigate(path || "new", null, { replace: true });
       pollMcpInteractions();

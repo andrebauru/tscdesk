@@ -490,16 +490,16 @@ test("context menu exposes file and folder actions and file previews are readabl
   assert.match(folderMenu.textContent, /Unselect folder contents/);
 });
 
-test("Explorer is wired into the chat dock and shipped as its own asset", () => {
+test("Explorer is wired into the right-hand chat dock only and shipped as its own asset", () => {
   assert.match(indexHtml, /src="\/explorer\.js"/);
-  assert.match(appSource, /contextDrawer\("explorer"\)/);
+  assert.match(appSource, /toggleContextDock\("explorer"\)/);
   assert.match(appSource, /\["explorer", "Explorer"\]/);
   assert.match(appSource, /explorerDraftId/);
   assert.match(appSource, /transferContext/);
-  assert.match(appSource, /sidebar-explorer/);
+  assert.doesNotMatch(appSource, /sidebar-explorer/);
   assert.match(appCss, /\.explorer-panel/);
   assert.match(appCss, /\.explorer-check\s*\{[^}]*width:\s*14px/);
-  assert.match(appCss, /\.sidebar-explorer/);
+  assert.doesNotMatch(appCss, /\.sidebar-explorer/);
 });
 
 test("renders visible names alongside checkboxes, strips verbatim Windows prefix, shows badges and token budget", async (t) => {

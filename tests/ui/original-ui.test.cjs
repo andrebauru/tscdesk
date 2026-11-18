@@ -401,7 +401,9 @@ async function fixture({
   w.eval(source.replace('  function plainBody(text) {', '  window.testPlainBody = plainBody;\n  function plainBody(text) {'));
   await wait();
   const click = async (text) => {
-    const b = Array.from(w.document.querySelectorAll("button")).find(
+    const dialogs = Array.from(w.document.querySelectorAll("dialog")).filter((d) => d.open !== false);
+    const scope = dialogs.length ? dialogs[dialogs.length - 1] : w.document;
+    const b = Array.from(scope.querySelectorAll("button")).find(
       (b) =>
         b.textContent.trim() === text || b.getAttribute("aria-label") === text,
     );
@@ -2106,23 +2108,70 @@ test("Smart Auto safety note, Markdown conversation export, and DeepSeek Message
   }
 });
 
-test("Explorer opens in the chat dock and asks only for the active conversation state", async () => {
+test("Explorer opens automatically on startup in right dock, toggles via topbar, never duplicates on conversation switch, and preserves Monaco + layout", async () => {
   const f = await fixture();
   try {
+    await wait();
+    await wait();
+
+    // 1. Left-sidebar Explorer no longer exists
+    assert.equal(f.w.document.getElementById("sidebar-explorer"), null);
+    assert.equal(f.w.document.querySelector(".sidebar .explorer-panel"), null);
+
+    // 2. Right-hand Explorer opens automatically on startup ("Your workspace") and is mounted exactly once
+    const dockHost = f.w.document.getElementById("context-dock-host");
+    assert.ok(dockHost);
+    assert.equal(dockHost.hidden, false);
+    assert.equal(f.w.document.querySelectorAll(".workspace-dock").length, 1);
+    assert.equal(f.w.document.querySelectorAll(".explorer-panel").length, 1);
+    assert.match(dockHost.textContent, /EXPLORER/);
+    assert.match(dockHost.textContent, /No sources yet/);
+
+    // 3. Layout order: #page-host -> #editor-pane -> #context-dock-host
+    const split = f.w.document.getElementById("workspace-split");
+    const children = [...split.children];
+    const pageIdx = children.indexOf(f.w.document.getElementById("page-host"));
+    const editorIdx = children.indexOf(f.w.document.getElementById("editor-pane"));
+    const dockIdx = children.indexOf(dockHost);
+    assert.ok(pageIdx >= 0 && editorIdx > pageIdx && dockIdx > editorIdx);
+
+    // 4. Switching to an existing conversation keeps a single right Explorer and loads active conversation state
     await f.click("Existing conversation");
-    await f.click("Explorer");
     await wait();
     await wait();
-    const drawer = f.w.document.querySelector(".drawer");
-    assert.ok(drawer);
-    assert.match(drawer.textContent, /EXPLORER/);
-    assert.match(drawer.textContent, /No sources yet/);
+    assert.equal(f.w.document.querySelectorAll(".workspace-dock").length, 1);
+    assert.equal(f.w.document.querySelectorAll(".explorer-panel").length, 1);
+    assert.equal(f.w.document.getElementById("context-dock-host").hidden, false);
     const stateCalls = f.calls.filter(
       (call) => call.service === "Explorer" && call.member === "getState",
     );
     assert.ok(stateCalls.length > 0);
     assert.equal(stateCalls.at(-1).args[0].sessionId, "fixture-one");
+
+    // 5. Topbar Explorer button toggles ONLY the right-hand panel without changing Editor position
+    const topbarBtn = f.w.document.getElementById("topbar-explorer-toggle");
+    assert.ok(topbarBtn);
+    assert.equal(topbarBtn.getAttribute("aria-pressed"), "true");
+    topbarBtn.click();
+    await wait();
+    assert.equal(f.w.document.getElementById("context-dock-host").hidden, true);
+    assert.equal(topbarBtn.getAttribute("aria-pressed"), "false");
+
+    topbarBtn.click();
+    await wait();
+    await wait();
+    assert.equal(f.w.document.getElementById("context-dock-host").hidden, false);
+    assert.equal(f.w.document.querySelectorAll(".explorer-panel").length, 1);
+    assert.equal(topbarBtn.getAttribute("aria-pressed"), "true");
   } finally {
     f.close();
   }
+});
+
+test("Layout CSS fits 1920x1080 and 1366x768 without horizontal overflow", () => {
+  const editorCss = fs.readFileSync(path.join(__dirname, "../../resources/ui/editor.css"), "utf8");
+  assert.match(editorCss, /\.workspace-split\s*>\s*#page-host\s*\{[^}]*min-width:\s*280px/);
+  assert.match(editorCss, /\.editor-pane\s*\{[^}]*flex:\s*0\s+1\s+auto/);
+  assert.match(editorCss, /\.context-dock-host\s*\{[^}]*flex:\s*0\s+1\s+auto/);
+  assert.match(editorCss, /\.context-dock-host\s*\{[^}]*height:\s*100%/);
 });
